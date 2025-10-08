@@ -1,24 +1,10 @@
 const std = @import("std");
 const _errors = @import("./errors.zig");
+const _token = @import("./tokentype.zig");
 
 const print = std.debug.print;
 
-const Scanner = struct {
-    source: []const u8,
-    allocator: std.mem.Allocator,
 
-    pub fn init(source: []const u8, allocator: std.mem.Allocator) Scanner {
-        return Scanner{ .source = source, .allocator = allocator };
-    }
-
-    pub fn scanTokens(self: *Scanner) []const u8 {
-        return self.source;
-    }
-
-    pub fn deinit(self: *Scanner) void {
-        _ = self;
-    }
-};
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -92,19 +78,38 @@ fn run_prompt() !void {
 }
 
 fn run(source: []const u8) !void {
-    // Initialize the general purpose allocator
+    const _type = _token.TokenType;
+    
+    // Initialize the general purpose allocator for tokens I think
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
-    const bytes = try allocator.alloc(u8, 4096);
+    const tokens = try allocator.alloc(_token.TokenType, 4096);
 
-    var scanner = Scanner.init(source, allocator);
-    defer scanner.deinit();
+    var c: u8 = 0; //current position
+    // var s: u8 = 0; //start position
+    // var l: u8 = 1; //line
+    var t: u8 = 0; // some way to move token position forware
 
-    const tokens = scanner.scanTokens();
+    while(c < source.len) {
+        switch (source[c]) {
+            '(' => { tokens[t] = _type.LEFT_PAREN; t += 1; },
+            41 => { tokens[t] = _type.RIGHT_PAREN; t += 1;},
+            123 => { tokens[t] = _type.LEFT_BRACE; t += 1;},
+            125 => { tokens[t] = _type.RIGHT_BRACE; t += 1;},
+            44 => { tokens[t] = _type.COMMA; t += 1;},
+            46 => { tokens[t] = _type.DOT; t += 1;},
+            45 => { tokens[t] = _type.MINUS; t += 1;},
+            43 => { tokens[t] = _type.PLUS; t += 1;},
+            59 => { tokens[t] = _type.SEMICOLON; t += 1;},
+            42 => { tokens[t] = _type.STAR; t += 1;},
+            else => {},
+        }
+        c += 1;
+    }
 
-    for (tokens) |token| {
+    for (tokens[0..t]) |token| {
         var stdout_buffer: [1024]u8 = undefined;
         var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
         const stdout = &stdout_writer.interface;
@@ -112,6 +117,6 @@ fn run(source: []const u8) !void {
         try stdout.flush();
     }
 
-    allocator.free(bytes);
+    allocator.free(tokens);
     return;
 }
