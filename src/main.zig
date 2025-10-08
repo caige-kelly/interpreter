@@ -3,7 +3,6 @@ const _errors = @import("./errors.zig");
 
 const print = std.debug.print;
 
-
 const Scanner = struct {
     source: []const u8,
     allocator: std.mem.Allocator,
@@ -50,7 +49,8 @@ fn run_file(path: []const u8) !void {
 
     const stat = try file.stat();
 
-    if (stat.size > std.math.maxInt(usize)) {
+    // Fail if file larger than 2 GiB
+    if (stat.size > 2147483648) {
         return error.FileTooLarge;
     }
 
@@ -75,20 +75,20 @@ fn run_prompt() !void {
     var stdin_buffer: [1024]u8 = undefined;
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
     const stdin = &stdin_reader.interface;
-        
-        while (true) {
-            try stdout.print("lox> ", .{});
-            try stdout.flush();
 
-            const line = stdin.takeDelimiterExclusive('\n')  catch |err| switch (err) {
-                error.EndOfStream => break,
-                else => return err,
-            };
+    while (true) {
+        try stdout.print("lox> ", .{});
+        try stdout.flush();
 
-            if (line.len == 0) continue;
+        const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
+            error.EndOfStream => break,
+            else => return err,
+        };
 
-            try run(line);
-        }
+        if (line.len == 0) continue;
+
+        try run(line);
+    }
 }
 
 fn run(source: []const u8) !void {
