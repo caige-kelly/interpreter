@@ -1,4 +1,6 @@
 const std = @import("std");
+const _errors = @import("./errors.zig");
+
 const print = std.debug.print;
 
 
@@ -38,19 +40,31 @@ pub fn main() !void {
 }
 
 fn run_file(path: []const u8) !void {
+    // Initialize the general purpose allocator
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
+    // Read the file
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    const buffer: []u8 = undefined;
-    var reader = file.reader(buffer);
-    const interface = &reader.interface;
+    const stat = try file.stat();
 
-    const file_content = interface.takeDelimiterExclusive('0') catch |err| switch (err) {
-        error.EndOfStream => "",
-        else => return err,
+    if (stat.size > std.math.maxInt(usize)) {
+        return error.FileTooLarge;
+    }
+
+    const allocator = gpa.allocator();
+    const bytes = try allocator.alloc(u8, stat.size);
+
+    _ = file.read(bytes) catch {
+        allocator.free(bytes);
+        return error.FileReadError;
     };
 
-    try run(file_content);
+    try run(bytes);
+
+    allocator.free(bytes);
 }
 
 fn run_prompt() !void {
@@ -80,6 +94,8 @@ fn run_prompt() !void {
 fn run(source: []const u8) !void {
     // Initialize the general purpose allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+
     const allocator = gpa.allocator();
     const bytes = try allocator.alloc(u8, 4096);
 
@@ -87,17 +103,15 @@ fn run(source: []const u8) !void {
     defer scanner.deinit();
 
     const tokens = scanner.scanTokens();
-    print("Tokens: {s}\n", .{tokens});
 
     for (tokens) |token| {
         var stdout_buffer: [1024]u8 = undefined;
         var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
         const stdout = &stdout_writer.interface;
-        try stdout.print("{d}\n", .{token});
+        try stdout.print("{any}\n", .{token});
         try stdout.flush();
     }
 
     allocator.free(bytes);
-    defer _ = gpa.deinit();
     return;
 }
