@@ -10,9 +10,8 @@ const Scanner = struct {
         return Scanner{ .source = source, .allocator = allocator };
     }
 
-    pub fn scanTokens(self: *Scanner) ![]const u8 {
-        _ = self;
-        return "no-tokens-yet";
+    pub fn scanTokens(self: *Scanner) []const u8 {
+        return self.source;
     }
 
     pub fn deinit(self: *Scanner) void {
@@ -34,7 +33,7 @@ pub fn main() !void {
     } else if (args.len == 2) {
         try run_file(args[1]);
     } else {
-        try run_prompt(allocator);
+        try run_prompt();
     }
 }
 
@@ -42,32 +41,19 @@ fn run_file(path: []const u8) !void {
     const file = try std.fs.cwd().openFile(path, .{});
     defer file.close();
 
-    var buffer: [4096]u8 = undefined;
-    try file.seekTo(0);
-    const bytesRead = try file.readAll(&buffer);
+    const buffer: []u8 = undefined;
+    var reader = file.reader(buffer);
+    const interface = &reader.interface;
 
-    std.debug.print("Running file: {s}\n", .{path});
-    std.debug.print("File contents:\n{s}\n", .{buffer[0..bytesRead]});
+    const file_content = interface.takeDelimiterExclusive('0') catch |err| switch (err) {
+        error.EndOfStream => "",
+        else => return err,
+    };
+
+    try run(file_content);
 }
 
-fn run(source: []const u8, allocator: std.mem.Allocator) !void {
-    // Initialize scanner
-    var scanner = Scanner.init(source, allocator);
-
-    // Get tokens
-    const tokens = try scanner.scanTokens();
-
-    for (tokens) |token| {
-        var buf: [1024]u8 = undefined;
-        var stdout_file = std.fs.File.stdout();
-        var writer = stdout_file.writer(&buf).interface;
-        try writer.print("{d}\n", .{token});
-    }
-
-    scanner.deinit();
-}
-
-fn run_prompt(allocator: std.mem.Allocator) !void {
+fn run_prompt() !void {
     var stdout_buffer: [1024]u8 = undefined;
     var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
     const stdout = &stdout_writer.interface;
@@ -87,6 +73,31 @@ fn run_prompt(allocator: std.mem.Allocator) !void {
 
             if (line.len == 0) continue;
 
-            try run(line, allocator);
+            try run(line);
         }
+}
+
+fn run(source: []const u8) !void {
+    // Initialize the general purpose allocator
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    const allocator = gpa.allocator();
+    const bytes = try allocator.alloc(u8, 4096);
+
+    var scanner = Scanner.init(source, allocator);
+    defer scanner.deinit();
+
+    const tokens = scanner.scanTokens();
+    print("Tokens: {s}\n", .{tokens});
+
+    for (tokens) |token| {
+        var stdout_buffer: [1024]u8 = undefined;
+        var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+        const stdout = &stdout_writer.interface;
+        try stdout.print("{d}\n", .{token});
+        try stdout.flush();
+    }
+
+    allocator.free(bytes);
+    defer _ = gpa.deinit();
+    return;
 }
