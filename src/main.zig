@@ -1,5 +1,5 @@
 const std = @import("std");
-const _errors = @import("./errors.zig");
+const errors = @import("./error.zig");
 const _scanner = @import("./scanner.zig").Scanner;
 
 const print = std.debug.print;
@@ -83,6 +83,7 @@ fn run(source: []const u8) !void {
     defer _ = scanner.deinit();
 
     while (!scanner.isAtEnd()) {
+
         try scanner.scanTokens();
     }
 

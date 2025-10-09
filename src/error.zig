@@ -1,6 +1,8 @@
 const std = @import("std");
 
-pub fn report(line: u8, where: []const u8, message: []const u8) !void {
+pub var hadError: bool = false;
+
+pub fn report(line: usize, where: []const u8, message: []const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
+const errors = @import("error.zig");
 
 pub const Scanner = struct {
     source: []const u8,
@@ -62,8 +63,11 @@ pub const Scanner = struct {
                 '*' => self.makeToken(.STAR, 1),
                 '/' => self.makeToken(.SLASH, 1),
                 ' ', '\t', '\r' => return,
-                '\n' => { self.line += 1; return; },
-                else => return,
+                '\n' => {self.line += 1; return; },
+                else => {
+                    try errors.report(self.line, "", "Unexpected character.");
+                    return;
+                },
         };
         try self.tokens.append(self.allocator, token);
     }
