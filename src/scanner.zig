@@ -37,79 +37,35 @@ pub const Scanner = struct {
         return self.source[self.current];
     }
 
-    pub fn scanTokens(self: *Scanner) void {
+    pub fn scanTokens(self: *Scanner) !void {
         while (!self.isAtEnd()) {
             self.start = self.current;
-            self.scanToken();
+            try self.scanToken();
         }
+        try self.tokens.append(self.allocator, self.makeToken(.EOF,  1));
     }
 
-    pub fn scanToken(self: *Scanner) Token {
-        while (!self.isAtEnd()) {
+    pub fn scanToken(self: *Scanner) !void {
             const c = self.advance();
 
-            switch (c) {
+            const token = switch (c) {
                 // Single-character tokens
-                '(' => return self.makeToken(.LEFT_PAREN, 1),
-                ')' => return self.makeToken(.RIGHT_PAREN, 1),
-                '{' => return self.makeToken(.LEFT_BRACE, 1),
-                '}' => return self.makeToken(.RIGHT_BRACE, 1),
-                ',' => return self.makeToken(.COMMA, 1),
-                '.' => return self.makeToken(.DOT, 1),
-                '-' => return self.makeToken(.MINUS, 1),
-                '+' => return self.makeToken(.PLUS, 1),
-                ';' => return self.makeToken(.SEMICOLON, 1),
-                '*' => return self.makeToken(.STAR, 1),
-                '/' => return self.makeToken(.SLASH, 1),
-
-                // Multi-character operators
-                '!' => {
-                    if (self.peek() == '=') {
-                        _ = self.advance();
-                        return self.makeToken(.BANG_EQUAL, 2);
-                    } else {
-                        return self.makeToken(.BANG, 1);
-                    }
-                },
-                '=' => {
-                    if (self.peek() == '=') {
-                        _ = self.advance();
-                        return self.makeToken(.EQUAL_EQUAL, 2);
-                    } else {
-                        return self.makeToken(.EQUAL, 1);
-                    }
-                },
-                '<' => {
-                    if (self.peek() == '=') {
-                        _ = self.advance();
-                        return self.makeToken(.LESS_EQUAL, 2);
-                    } else {
-                        return self.makeToken(.LESS, 1);
-                    }
-                },
-                '>' => {
-                    if (self.peek() == '=') {
-                        _ = self.advance();
-                        return self.makeToken(.GREATER_EQUAL, 2);
-                    } else {
-                        return self.makeToken(.GREATER, 1);
-                    }
-                },
-
-                // Whitespace
-                ' ', '\t', '\r' => continue,
-                '\n' => {
-                    self.line += 1;
-                    continue;
-                },
-
-                // Unknown letters are ignored for now
-                else => continue,
-            }
-        }
-
-        // End of input
-        return Token{ .type = .EOF, .lexeme = "", .literal = "", .line = self.line, .column = self.current };
+                '(' => self.makeToken(.LEFT_PAREN, 1),
+                ')' => self.makeToken(.RIGHT_PAREN, 1),
+                '{' => self.makeToken(.LEFT_BRACE, 1),
+                '}' => self.makeToken(.RIGHT_BRACE, 1),
+                ',' => self.makeToken(.COMMA, 1),
+                '.' => self.makeToken(.DOT, 1),
+                '-' => self.makeToken(.MINUS, 1),
+                '+' => self.makeToken(.PLUS, 1),
+                ';' => self.makeToken(.SEMICOLON, 1),
+                '*' => self.makeToken(.STAR, 1),
+                '/' => self.makeToken(.SLASH, 1),
+                ' ', '\t', '\r' => return,
+                '\n' => { self.line += 1; return; },
+                else => return,
+        };
+        try self.tokens.append(self.allocator, token);
     }
 
     fn makeToken(self: *Scanner, t: TokenType, length: usize) Token {

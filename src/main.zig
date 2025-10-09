@@ -83,7 +83,10 @@ fn run(source: []const u8) !void {
     defer _ = scanner.deinit();
 
     while (!scanner.isAtEnd()) {
-        const token = scanner.scanToken();
+        try scanner.scanTokens();
+    }
+
+    for (scanner.tokens.items) |token| {
         print("{any}\n", .{token});
     }
 }
