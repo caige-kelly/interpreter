@@ -5,14 +5,14 @@ const _scanner = @import("./scanner.zig").Scanner;
 const print = std.debug.print;
 
 pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
-    defer _ = gpa.deinit();
+    var buffer: [1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&buffer);
+    const allocator = fba.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    if (args.len > 3) {
+    if (args.len > 2) {
         print("Usage: zlox [script]\n", .{});
         return;
     } else if (args.len == 2) {
