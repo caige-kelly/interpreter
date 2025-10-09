@@ -3,8 +3,9 @@
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
-    literal: []const u8,
-    line: u8,
+    literal: []const u8 = .none ,
+    line: u32,
+    column: u32,
 
     pub fn toString(self: *Token) void {
         _ = self;

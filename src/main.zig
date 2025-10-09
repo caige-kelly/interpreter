@@ -85,25 +85,26 @@ fn run(source: []const u8) !void {
     defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
-    const tokens = try allocator.alloc(_token.TokenType, 4096);
+    const tokens = try allocator.alloc(_token.Token, 4096);
 
-    var c: u8 = 0; //current position
+    var c: u8 = 0; //column position
     // var s: u8 = 0; //start position
-    // var l: u8 = 1; //line
+    var l: u8 = 1; //line
     var t: u8 = 0; // some way to move token position forware
 
     while(c < source.len) {
         switch (source[c]) {
-            '(' => { tokens[t] = _type.LEFT_PAREN; t += 1; },
-            41 => { tokens[t] = _type.RIGHT_PAREN; t += 1;},
-            123 => { tokens[t] = _type.LEFT_BRACE; t += 1;},
-            125 => { tokens[t] = _type.RIGHT_BRACE; t += 1;},
-            44 => { tokens[t] = _type.COMMA; t += 1;},
-            46 => { tokens[t] = _type.DOT; t += 1;},
-            45 => { tokens[t] = _type.MINUS; t += 1;},
-            43 => { tokens[t] = _type.PLUS; t += 1;},
-            59 => { tokens[t] = _type.SEMICOLON; t += 1;},
-            42 => { tokens[t] = _type.STAR; t += 1;},
+            40 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.LEFT_PAREN, .line = l, .column = c}; t += 1; },
+            41 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.RIGHT_PAREN, .line = l, .column = c}; t += 1;},
+            123 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.LEFT_BRACE, .line = l, .column = c}; t += 1;},
+            125 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.RIGHT_BRACE, .line = l, .column = c}; t += 1;},
+            44 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.COMMA, .line = l, .column = c}; t += 1;},
+            46 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.DOT, .line = l, .column = c}; t += 1;},
+            45 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.MINUS, .line = l, .column = c}; t += 1;},
+            43 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.PLUS, .line = l, .column = c}; t += 1;},
+            59 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.SEMICOLON, .line = l, .column = c}; t += 1;},
+            42 => { tokens[t] = _token.Token{ .lexeme = source[c..c+1], .type = _type.STAR, .line = l, .column = c}; t += 1;},
+            10 => { l += 1; c = 0; },
             else => {},
         }
         c += 1;
