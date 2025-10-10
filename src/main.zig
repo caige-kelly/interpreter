@@ -4,6 +4,7 @@ const _scanner = @import("./scanner.zig").Scanner;
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 pub fn main() !void {
+
     var buffer: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const allocator = fba.allocator();
@@ -24,25 +25,24 @@ pub fn main() !void {
 }
 
 fn runFile(path: []const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
 
-    // Read the file
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const f = try std.fs.cwd().openFile(path, .{});
+    defer f.close();
 
-    const stat = try file.stat();
+    const stat = try f.stat();
 
-    // Fail if file larger than 2 GiB
     if (stat.size > max_size) {
         return error.FileTooLarge;
     }
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
     const bytes = try allocator.alloc(u8, stat.size);
     defer allocator.free(bytes);
 
-    _ = try file.readAll(bytes);
+    _ = try f.readAll(bytes);
 
     try run(bytes);
 }
