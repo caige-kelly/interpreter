@@ -1,30 +1,29 @@
 const std = @import("std");
-const errors = @import("./error.zig");
 const _scanner = @import("./scanner.zig").Scanner;
 
-var stdout = std.fs.File.stdout().writer(&.{});
-const w = &stdout.interface;
+const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 pub fn main() !void {
-    var buffer: [1024]u8 = undefined;
+    var buffer: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const allocator = fba.allocator();
 
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
+    var stdout = std.fs.File.stdout().writer(&.{});
+    var w = &stdout.interface;
+
     switch (args.len) {
         1 => try runPrompt(),
         2 => try runFile(args[1]),
         else => {
             try w.print("Usage: zlox [script]\n", .{});
-            try w.flush();
         },
     }
 }
 
 fn runFile(path: []const u8) !void {
-    // Initialize the general purpose allocator
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
@@ -35,21 +34,17 @@ fn runFile(path: []const u8) !void {
     const stat = try file.stat();
 
     // Fail if file larger than 2 GiB
-    if (stat.size > 2147483648) {
+    if (stat.size > max_size) {
         return error.FileTooLarge;
     }
 
     const allocator = gpa.allocator();
     const bytes = try allocator.alloc(u8, stat.size);
+    defer allocator.free(bytes);
 
-    _ = file.read(bytes) catch {
-        allocator.free(bytes);
-        return error.FileReadError;
-    };
+    _ = try file.readAll(bytes);
 
     try run(bytes);
-
-    allocator.free(bytes);
 }
 
 fn runPrompt() !void {
@@ -57,9 +52,11 @@ fn runPrompt() !void {
     var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
     const stdin = &stdin_reader.interface;
 
+    var stdout = std.fs.File.stdout().writer(&.{});
+    const w = &stdout.interface;
+
     while (true) {
         try w.print("lox> ", .{});
-        try w.flush();
 
         const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
             error.EndOfStream => break,
@@ -79,12 +76,12 @@ fn run(source: []const u8) !void {
     var scanner = try _scanner.init(source, gpa.allocator());
     defer _ = scanner.deinit();
 
-    while (!scanner.isAtEnd()) {
-        try scanner.scanTokens();
-    }
+    try scanner.scanTokens();
+
+    var stdout = std.fs.File.stdout().writer(&.{});
+    var w = &stdout.interface;
 
     for (scanner.tokens.items) |token| {
         try w.print("{any}\n", .{token});
-        try w.flush();
     }
 }
