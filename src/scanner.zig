@@ -4,8 +4,6 @@ const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Literal = @import("token.zig").Literals;
 
-const numbers = [_]u8{ '0', '1', '2', '3', '4', '5', '6', '7', '8', '9' };
-
 pub const Scanner = struct {
     source: []const u8,
     tokens: std.ArrayList(Token),
@@ -39,30 +37,27 @@ pub const Scanner = struct {
 
         return switch (c) {
             // Single-character tokens
-            '(' => self.makeToken(.LEFT_PAREN, null),
-            ')' => self.makeToken(.RIGHT_PAREN, null),
-            '{' => self.makeToken(.LEFT_BRACE, null),
-            '}' => self.makeToken(.RIGHT_BRACE, null),
-            ',' => self.makeToken(.COMMA, null),
-            '.' => self.makeToken(.DOT, null),
-            '-' => self.makeToken(.MINUS, null),
-            '+' => self.makeToken(.PLUS, null),
-            ';' => self.makeToken(.SEMICOLON, null),
-            '*' => self.makeToken(.STAR, null),
-            '"' => self.makeToken(self.stringLiteral(), .{ .string = self.source[self.start + 1 .. self.current - 1] }),
-            '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, null),
-            '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, null) else self.makeToken(.BANG, null),
-            '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, null) else self.makeToken(.EQUAL, null),
-            '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL, null) else self.makeToken(.LESS, null),
-            '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL, null) else self.makeToken(.GREATER, null),
+            '(' => self.makeToken(.LEFT_PAREN, .none),
+            ')' => self.makeToken(.RIGHT_PAREN, .none),
+            '{' => self.makeToken(.LEFT_BRACE, .none),
+            '}' => self.makeToken(.RIGHT_BRACE, .none),
+            ',' => self.makeToken(.COMMA, .none),
+            '.' => self.makeToken(.DOT, .none),
+            '-' => self.makeToken(.MINUS, .none),
+            '+' => self.makeToken(.PLUS, .none),
+            ';' => self.makeToken(.SEMICOLON, .none),
+            '*' => self.makeToken(.STAR, .none),
+            '"' => self.makeToken(self.stringLiteral(), .string),
+            '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
+            '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
+            '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
+            '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL, .none) else self.makeToken(.LESS, .none),
+            '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL, .none) else self.makeToken(.GREATER, .none),
             ' ' => null,
             '\r' => null,
             '\t' => null,
             '\n' => self.newLineLexeme(),
-            else => if (isNumber(c))
-                self.makeToken(self.numberLiteral(), .{ .number = std.fmt.parseFloat(f64, self.source[self.start..self.current]) catch unreachable })
-            else
-                self.undefinedLexeme(),
+            else => if (isNumber(c)) self.makeToken(self.numberLiteral(), .number) else if (isAlpha(c)) self.makeToken(self.identifier(), .keyword) else self.undefinedLexeme(),
         };
     }
 
@@ -84,15 +79,31 @@ pub const Scanner = struct {
         return null;
     }
 
-    fn isNumber(token: u8) bool {
-        for (numbers) |number| {
-            if (token == number) return true;
+    fn identifier(self: *Scanner) TokenType {
+        while (isAlpha(self.peek()) or isNumber(self.peek())) {
+            _ = self.advance();
         }
 
+        return .IDENTIFIER;
+    }
+
+    fn isAlpha(token: anytype) bool {
+        if (token >= 'a' and token <= 'z') return true;
+        if (token >= 'A' and token <= 'Z') return  true;
+        if (token == '_') return true;
+        
         return false;
     }
 
-    fn numberLiteral(self: *Scanner) ?TokenType {
+    fn isNumber(token: anytype) bool {
+        if (token >= '0' and token <= '9') {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    fn numberLiteral(self: *Scanner) TokenType {
         while (isNumber(self.peek())) _ = self.advance();
 
         if (self.peek() == '.' and isNumber(self.peekNext())) {
@@ -103,7 +114,7 @@ pub const Scanner = struct {
         return .NUMBER;
     }
 
-    fn stringLiteral(self: *Scanner) ?TokenType {
+    fn stringLiteral(self: *Scanner) TokenType {
         while (self.peek() != '"' and !self.isAtEnd()) {
             if (self.peek() == '\n') self.line += 1;
             _ = self.advance();
@@ -111,7 +122,7 @@ pub const Scanner = struct {
 
         if (self.isAtEnd()) {
             errors.report(self.line, "", "Unterminatd string.");
-            return null;
+            std.process.exit(1);
         }
 
         _ = self.advance();
@@ -141,7 +152,8 @@ pub const Scanner = struct {
     }
 
     fn endOfFie(self: *Scanner) ?Token {
-        return self.makeToken(.EOF, null);
+        //self.start = self.current;
+        return self.makeToken(.EOF, .none);
     }
 
     fn match(self: *Scanner, expected: u8) bool {
@@ -153,13 +165,19 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: ?TokenType, literal: ?Literal) ?Token {
-        if (t == null) return null;
+    fn makeToken(self: *Scanner, t: TokenType, L: anytype) ?Token {
+        const literal = switch (L) {
+            .number => Literal{ .number = std.fmt.parseFloat(f64, self.source[self.start..self.current]) catch unreachable} ,
+            .string => Literal{ .string = self.source[self.start + 1 .. self.current - 1] },
+            .keyword => Literal{ .string = self.source[self.start .. self.current - 1] },
+            .none => .none,
+            else => .none   
+        };
 
         return Token{
-            .type = t.?,
+            .type = t,
             .lexeme = self.source[self.start..self.current],
-            .literal = if (literal == null) .{ .string = "" } else literal.?,
+            .literal = literal,
             .line = self.line,
             .column = self.column,
         };

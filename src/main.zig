@@ -83,6 +83,8 @@ fn run(source: []const u8) !void {
         switch (token.literal) {
             .number => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {d}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getNLiteral(), token.line, token.column }),
             .string => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral(), token.line, token.column }),
+            .keyword => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral(), token.line, token.column }),
+            .none => try w.print("{{ type = .{s}, lexeme = '{s}', line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.line, token.column }),
         }
     }
 }

@@ -1,10 +1,10 @@
 // All things related to tokens
-pub const Literals = union(enum) { number: f64, string: []const u8 };
+pub const Literals = union(enum) { number: f64, string: []const u8, none: void, keyword: []const u8 };
 
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
-    literal: Literals,
+    literal: Literals = .none,
     line: usize,
     column: usize,
 
