@@ -1,5 +1,4 @@
 const std = @import("std");
-
 const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
@@ -30,40 +29,50 @@ pub const Scanner = struct {
         return ch;
     }
 
-    // pub fn peek(self: *Scanner) u8 {
-    //     if (self.isAtEnd()) return 0;
-    //     return self.source[self.current];
-    // }
+    pub fn peek(self: *Scanner) u8 {
+        if (self.isAtEnd()) return 0;
+        return self.source[self.current];
+    }
 
-    pub fn scanTokens(self: *Scanner) !void {
+    pub fn scanTokens(self: *Scanner) ![]Token {
         while (!self.isAtEnd()) {
             self.start = self.current;
             try self.scanToken();
         }
-        try self.tokens.append(self.allocator, self.makeToken(.EOF));
+        
+        try self.makeToken(.EOF);
+        return self.tokens.items;
     }
 
     pub fn scanToken(self: *Scanner) !void {
         const c = self.advance();
 
-        const token = switch (c) {
+        switch (c) {
             // Single-character tokens
-            '(' => self.makeToken(.LEFT_PAREN),
-            ')' => self.makeToken(.RIGHT_PAREN),
-            '{' => self.makeToken(.LEFT_BRACE),
-            '}' => self.makeToken(.RIGHT_BRACE),
-            ',' => self.makeToken(.COMMA),
-            '.' => self.makeToken(.DOT),
-            '-' => self.makeToken(.MINUS),
-            '+' => self.makeToken(.PLUS),
-            ';' => self.makeToken(.SEMICOLON),
-            '*' => self.makeToken(.STAR),
-            '/' => self.makeToken(.SLASH),
-            '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL) else self.makeToken(.BANG),
-            '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL) else self.makeToken(.EQUAL),
-            '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL) else self.makeToken(.LESS),
-            '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL) else self.makeToken(.GREATER),
-            ' ', '\t', '\r' => return,
+            '(' => try self.makeToken(.LEFT_PAREN),
+            ')' => try self.makeToken(.RIGHT_PAREN),
+            '{' => try self.makeToken(.LEFT_BRACE),
+            '}' => try self.makeToken(.RIGHT_BRACE),
+            ',' => try self.makeToken(.COMMA),
+            '.' => try self.makeToken(.DOT),
+            '-' => try self.makeToken(.MINUS),
+            '+' => try self.makeToken(.PLUS),
+            ';' => try self.makeToken(.SEMICOLON),
+            '*' => try self.makeToken(.STAR),
+            '/' => if (self.match('/')) {
+                while (self.peek() != '\n' and !self.isAtEnd()) {
+                    _ = self.advance();
+                }
+            } else {
+                try self.makeToken(.SLASH);
+            },
+            '!' => if (self.match('=')) try self.makeToken(.BANG_EQUAL) else try self.makeToken(.BANG),
+            '=' => if (self.match('=')) try self.makeToken(.EQUAL_EQUAL) else try self.makeToken(.EQUAL),
+            '<' => if (self.match('=')) try self.makeToken(.LESS_EQUAL) else try self.makeToken(.LESS),
+            '>' => if (self.match('=')) try self.makeToken(.GREATER_EQUAL) else try self.makeToken(.GREATER),
+            ' ' => return,
+            '\r' => return,
+            '\t' => return,
             '\n' => {
                 self.line += 1;
                 return;
@@ -72,8 +81,7 @@ pub const Scanner = struct {
                 try errors.report(self.line, "", "Unexpected character.");
                 return;
             },
-        };
-        try self.tokens.append(self.allocator, token);
+        }
     }
 
     fn match(self: *Scanner, expected: u8) bool {
@@ -84,13 +92,15 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: TokenType) Token {
-        return Token{
+    fn makeToken(self: *Scanner, t: TokenType) !void {
+        const token = Token{
             .type = t,
             .lexeme = self.source[self.start..self.current],
             .literal = "",
             .line = self.line,
             .column = self.current,
         };
+
+        try self.tokens.append(self.allocator, token);
     }
 };

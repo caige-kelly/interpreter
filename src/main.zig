@@ -76,12 +76,12 @@ fn run(source: []const u8) !void {
     var scanner = try _scanner.init(source, gpa.allocator());
     defer _ = scanner.deinit();
 
-    try scanner.scanTokens();
+    const tokens = try scanner.scanTokens();
 
     var stdout = std.fs.File.stdout().writer(&.{});
     var w = &stdout.interface;
 
-    for (scanner.tokens.items) |token| {
+    for (tokens) |token| {
         try w.print("{any}\n", .{token});
     }
 }
