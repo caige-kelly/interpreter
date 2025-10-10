@@ -1,8 +1,5 @@
 // All things related to tokens
-pub const Literals = union(enum) {
-    number: f64,
-    string: []const u8
-};
+pub const Literals = union(enum) { number: f64, string: []const u8 };
 
 pub const Token = struct {
     type: TokenType,
@@ -11,14 +8,13 @@ pub const Token = struct {
     line: usize,
     column: usize,
 
-    pub fn getNLiteral(self: Token)  f64{
+    pub fn getNLiteral(self: Token) f64 {
         return self.literal.number;
     }
 
     pub fn getSLiteral(self: Token) []const u8 {
         return self.literal.string;
     }
-
 };
 
 pub const TokenType = enum {
