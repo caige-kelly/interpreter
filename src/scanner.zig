@@ -1,7 +1,8 @@
 const std = @import("std");
+
+const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
-const errors = @import("error.zig");
 
 pub const Scanner = struct {
     source: []const u8,
@@ -12,11 +13,7 @@ pub const Scanner = struct {
     line: usize = 1,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) !Scanner {
-        return Scanner{ 
-            .source = source, 
-            .allocator = allocator, 
-            .tokens = try std.ArrayList(Token).initCapacity(allocator, 4096) 
-        };
+        return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, 4096) };
     }
 
     pub fn deinit(self: *Scanner) void {
@@ -43,31 +40,34 @@ pub const Scanner = struct {
             self.start = self.current;
             try self.scanToken();
         }
-        try self.tokens.append(self.allocator, self.makeToken(.EOF,  1));
+        try self.tokens.append(self.allocator, self.makeToken(.EOF, 1));
     }
 
     pub fn scanToken(self: *Scanner) !void {
-            const c = self.advance();
+        const c = self.advance();
 
-            const token = switch (c) {
-                // Single-character tokens
-                '(' => self.makeToken(.LEFT_PAREN, 1),
-                ')' => self.makeToken(.RIGHT_PAREN, 1),
-                '{' => self.makeToken(.LEFT_BRACE, 1),
-                '}' => self.makeToken(.RIGHT_BRACE, 1),
-                ',' => self.makeToken(.COMMA, 1),
-                '.' => self.makeToken(.DOT, 1),
-                '-' => self.makeToken(.MINUS, 1),
-                '+' => self.makeToken(.PLUS, 1),
-                ';' => self.makeToken(.SEMICOLON, 1),
-                '*' => self.makeToken(.STAR, 1),
-                '/' => self.makeToken(.SLASH, 1),
-                ' ', '\t', '\r' => return,
-                '\n' => {self.line += 1; return; },
-                else => {
-                    try errors.report(self.line, "", "Unexpected character.");
-                    return;
-                },
+        const token = switch (c) {
+            // Single-character tokens
+            '(' => self.makeToken(.LEFT_PAREN, 1),
+            ')' => self.makeToken(.RIGHT_PAREN, 1),
+            '{' => self.makeToken(.LEFT_BRACE, 1),
+            '}' => self.makeToken(.RIGHT_BRACE, 1),
+            ',' => self.makeToken(.COMMA, 1),
+            '.' => self.makeToken(.DOT, 1),
+            '-' => self.makeToken(.MINUS, 1),
+            '+' => self.makeToken(.PLUS, 1),
+            ';' => self.makeToken(.SEMICOLON, 1),
+            '*' => self.makeToken(.STAR, 1),
+            '/' => self.makeToken(.SLASH, 1),
+            ' ', '\t', '\r' => return,
+            '\n' => {
+                self.line += 1;
+                return;
+            },
+            else => {
+                try errors.report(self.line, "", "Unexpected character.");
+                return;
+            },
         };
         try self.tokens.append(self.allocator, token);
     }
