@@ -4,7 +4,7 @@ pub const Literals = union(enum) { number: f64, string: []const u8, none: void, 
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
-    literal: Literals = .none,
+    literal: Literals,
     line: usize,
     column: usize,
 
