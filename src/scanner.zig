@@ -24,33 +24,34 @@ pub const Scanner = struct {
         while (!self.isAtEnd()) {
             self.start = self.current;
             const t = self.scanToken();
-            if (t != null) try self.makeToken(t.?) else continue;
+            if (t != null) try self.tokens.append(self.allocator, t.?) else continue;
         }
 
-        try self.endOfFie();
+        try self.tokens.append(self.allocator, self.endOfFie().?);
         return self.tokens.items;
     }
 
-    pub fn scanToken(self: *Scanner) ?TokenType {
+    pub fn scanToken(self: *Scanner) ?Token {
         const c = self.advance();
 
         return switch (c) {
             // Single-character tokens
-            '(' => .LEFT_PAREN,
-            ')' => .RIGHT_PAREN,
-            '{' => .LEFT_BRACE,
-            '}' => .RIGHT_BRACE,
-            ',' => .COMMA,
-            '.' => .DOT,
-            '-' => .MINUS,
-            '+' => .PLUS,
-            ';' => .SEMICOLON,
-            '*' => .STAR,
-            '/' => if (self.match('/')) self.commentLexeme() else .SLASH,
-            '!' => if (self.match('=')) .BANG_EQUAL else .BANG,
-            '=' => if (self.match('=')) .EQUAL_EQUAL else .EQUAL,
-            '<' => if (self.match('=')) .LESS_EQUAL else .LESS,
-            '>' => if (self.match('=')) .GREATER_EQUAL else .GREATER,
+            '(' => self.makeToken(.LEFT_PAREN, null),
+            ')' => self.makeToken(.RIGHT_PAREN, null),
+            '{' => self.makeToken(.LEFT_BRACE, null),
+            '}' => self.makeToken(.RIGHT_BRACE, null),
+            ',' => self.makeToken(.COMMA, null),
+            '.' => self.makeToken(.DOT, null),
+            '-' => self.makeToken(.MINUS, null),
+            '+' => self.makeToken(.PLUS, null),
+            ';' => self.makeToken(.SEMICOLON, null),
+            '*' => self.makeToken(.STAR, null),
+            '"' => self.makeToken(self.stringLiteral(), self.source[self.start+1..self.current-1]),
+            '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, null),
+            '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, null) else self.makeToken(.BANG, null),
+            '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, null) else self.makeToken(.EQUAL, null),
+            '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL, null) else self.makeToken(.LESS, null),
+            '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL, null) else self.makeToken(.GREATER, null),
             ' ' => null,
             '\r' => null,
             '\t' => null,
@@ -59,22 +60,38 @@ pub const Scanner = struct {
         };
     }
 
-    fn newLineLexeme(self: *Scanner) ?TokenType {
+    fn newLineLexeme(self: *Scanner) ?Token {
         self.column = 0;
         self.line += 1;
         return null;
     }
 
-    fn undefinedLexeme(self: *Scanner) ?TokenType {
+    fn undefinedLexeme(self: *Scanner) ?Token {
         errors.report(self.line, "", "Unexpected character.");
         return null;
     }
 
-    fn commentLexeme(self: *Scanner) ?TokenType {
+    fn commentLexeme(self: *Scanner) ?Token {
         while (self.peek() != '\n' and !self.isAtEnd()) {
             _ = self.advance();
         }
         return null;
+    }
+
+    fn stringLiteral(self: *Scanner) ?TokenType {
+        while (self.peek() != '"' and !self.isAtEnd()) {
+            if (self.peek() == '\n') self.line += 1;
+            _ = self.advance();
+        }
+
+        if (self.isAtEnd()) {
+            errors.report(self.line, "", "Unterminatd string."); 
+            return null;
+        }
+
+        _ = self.advance();
+
+        return .STRING;
     }
 
     fn advance(self: *Scanner) u8 {
@@ -93,8 +110,8 @@ pub const Scanner = struct {
         return self.current >= self.source.len;
     }
 
-    fn endOfFie(self: *Scanner) !void {
-        try self.makeToken(.EOF);
+    fn endOfFie(self: *Scanner) ?Token {
+        return self.makeToken(.EOF, null);
     }
 
     fn match(self: *Scanner, expected: u8) bool {
@@ -106,15 +123,15 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: TokenType) !void {
-        const token = Token{
-            .type = t,
+    fn makeToken(self: *Scanner, t: ?TokenType, literal: ?[]const u8) ?Token {
+        if (t == null) return null;
+
+        return Token{
+            .type = t.?,
             .lexeme = self.source[self.start..self.current],
-            .literal = "",
+            .literal = if (literal == null) "" else literal.?,
             .line = self.line,
             .column = self.column,
         };
-
-        try self.tokens.append(self.allocator, token);
     }
 };

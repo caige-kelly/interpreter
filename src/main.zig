@@ -80,6 +80,7 @@ fn run(source: []const u8) !void {
     var w = &stdout.interface;
 
     for (tokens) |token| {
-        try w.print("{any}\n", .{token});
+        try w.print("{{ type = .{s}, lexeme = '{s}', literal = '{s}', line = {d}, column = {d} }}\n",
+         .{@tagName(token.type), token.lexeme, token.literal, token.line, token.column});
     }
 }
