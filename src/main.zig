@@ -1,10 +1,9 @@
 const std = @import("std");
-const _scanner = @import("./scanner.zig").Scanner;
+const Scanner = @import("./scanner.zig").Scanner;
 
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
 pub fn main() !void {
-
     var buffer: [4096]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const allocator = fba.allocator();
@@ -25,7 +24,6 @@ pub fn main() !void {
 }
 
 fn runFile(path: []const u8) !void {
-
     const f = try std.fs.cwd().openFile(path, .{});
     defer f.close();
 
@@ -73,7 +71,7 @@ fn run(source: []const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var scanner = try _scanner.init(source, gpa.allocator());
+    var scanner = try Scanner.init(source, gpa.allocator());
     defer _ = scanner.deinit();
 
     const tokens = try scanner.scanTokens();

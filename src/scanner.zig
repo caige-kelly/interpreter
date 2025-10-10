@@ -10,6 +10,7 @@ pub const Scanner = struct {
     start: usize = 0,
     current: usize = 0,
     line: usize = 1,
+    column: usize = 0,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) !Scanner {
         return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, 4096) };
@@ -19,69 +20,81 @@ pub const Scanner = struct {
         self.tokens.deinit(self.allocator);
     }
 
-    pub fn isAtEnd(self: *Scanner) bool {
-        return self.current >= self.source.len;
+    pub fn scanTokens(self: *Scanner) ![]Token {
+        while (!self.isAtEnd()) {
+            self.start = self.current;
+            const t = self.scanToken();
+            if (t != null) try self.makeToken(t.?) else continue;
+        }
+
+        try self.endOfFie();
+        return self.tokens.items;
     }
 
-    pub fn advance(self: *Scanner) u8 {
+    pub fn scanToken(self: *Scanner) ?TokenType {
+        const c = self.advance();
+
+        return switch (c) {
+            // Single-character tokens
+            '(' => .LEFT_PAREN,
+            ')' => .RIGHT_PAREN,
+            '{' => .LEFT_BRACE,
+            '}' => .RIGHT_BRACE,
+            ',' => .COMMA,
+            '.' => .DOT,
+            '-' => .MINUS,
+            '+' => .PLUS,
+            ';' => .SEMICOLON,
+            '*' => .STAR,
+            '/' => if (self.match('/')) self.commentLexeme() else .SLASH,
+            '!' => if (self.match('=')) .BANG_EQUAL else .BANG,
+            '=' => if (self.match('=')) .EQUAL_EQUAL else .EQUAL,
+            '<' => if (self.match('=')) .LESS_EQUAL else .LESS,
+            '>' => if (self.match('=')) .GREATER_EQUAL else .GREATER,
+            ' ' => null,
+            '\r' => null,
+            '\t' => null,
+            '\n' => self.newLineLexeme(),
+            else => self.undefinedLexeme(),
+        };
+    }
+
+    fn newLineLexeme(self: *Scanner) ?TokenType {
+        self.column = 0;
+        self.line += 1;
+        return null;
+    }
+
+    fn undefinedLexeme(self: *Scanner) ?TokenType {
+        errors.report(self.line, "", "Unexpected character.");
+        return null;
+    }
+
+    fn commentLexeme(self: *Scanner) ?TokenType {
+        while (self.peek() != '\n' and !self.isAtEnd()) {
+            _ = self.advance();
+        }
+        return null;
+    }
+
+    fn advance(self: *Scanner) u8 {
         const ch = self.source[self.current];
         self.current += 1;
+        self.column += 1;
         return ch;
     }
 
-    pub fn peek(self: *Scanner) u8 {
+    fn peek(self: *Scanner) u8 {
         if (self.isAtEnd()) return 0;
         return self.source[self.current];
     }
 
-    pub fn scanTokens(self: *Scanner) ![]Token {
-        while (!self.isAtEnd()) {
-            self.start = self.current;
-            try self.scanToken();
-        }
-        
-        try self.makeToken(.EOF);
-        return self.tokens.items;
+    fn isAtEnd(self: *Scanner) bool {
+        return self.current >= self.source.len;
     }
 
-    pub fn scanToken(self: *Scanner) !void {
-        const c = self.advance();
-
-        switch (c) {
-            // Single-character tokens
-            '(' => try self.makeToken(.LEFT_PAREN),
-            ')' => try self.makeToken(.RIGHT_PAREN),
-            '{' => try self.makeToken(.LEFT_BRACE),
-            '}' => try self.makeToken(.RIGHT_BRACE),
-            ',' => try self.makeToken(.COMMA),
-            '.' => try self.makeToken(.DOT),
-            '-' => try self.makeToken(.MINUS),
-            '+' => try self.makeToken(.PLUS),
-            ';' => try self.makeToken(.SEMICOLON),
-            '*' => try self.makeToken(.STAR),
-            '/' => if (self.match('/')) {
-                while (self.peek() != '\n' and !self.isAtEnd()) {
-                    _ = self.advance();
-                }
-            } else {
-                try self.makeToken(.SLASH);
-            },
-            '!' => if (self.match('=')) try self.makeToken(.BANG_EQUAL) else try self.makeToken(.BANG),
-            '=' => if (self.match('=')) try self.makeToken(.EQUAL_EQUAL) else try self.makeToken(.EQUAL),
-            '<' => if (self.match('=')) try self.makeToken(.LESS_EQUAL) else try self.makeToken(.LESS),
-            '>' => if (self.match('=')) try self.makeToken(.GREATER_EQUAL) else try self.makeToken(.GREATER),
-            ' ' => return,
-            '\r' => return,
-            '\t' => return,
-            '\n' => {
-                self.line += 1;
-                return;
-            },
-            else => {
-                try errors.report(self.line, "", "Unexpected character.");
-                return;
-            },
-        }
+    fn endOfFie(self: *Scanner) !void {
+        try self.makeToken(.EOF);
     }
 
     fn match(self: *Scanner, expected: u8) bool {
@@ -89,6 +102,7 @@ pub const Scanner = struct {
         if (self.source[self.current] != expected) return false;
 
         self.current += 1;
+        self.column += 1;
         return true;
     }
 
@@ -98,7 +112,7 @@ pub const Scanner = struct {
             .lexeme = self.source[self.start..self.current],
             .literal = "",
             .line = self.line,
-            .column = self.current,
+            .column = self.column,
         };
 
         try self.tokens.append(self.allocator, token);
