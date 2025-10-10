@@ -169,7 +169,7 @@ pub const Scanner = struct {
         const literal = switch (L) {
             .number => Literal{ .number = std.fmt.parseFloat(f64, self.source[self.start..self.current]) catch unreachable} ,
             .string => Literal{ .string = self.source[self.start + 1 .. self.current - 1] },
-            .keyword => Literal{ .string = self.source[self.start .. self.current - 1] },
+            .keyword => Literal{ .string = self.source[self.start .. self.current] },
             .none => .none,
             else => .none   
         };
