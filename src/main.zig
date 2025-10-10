@@ -2,7 +2,8 @@ const std = @import("std");
 const errors = @import("./error.zig");
 const _scanner = @import("./scanner.zig").Scanner;
 
-const print = std.debug.print;
+var stdout = std.fs.File.stdout().writer(&.{});
+const w = &stdout.interface;
 
 pub fn main() !void {
     var buffer: [1024]u8 = undefined;
@@ -12,13 +13,13 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    if (args.len > 2) {
-        print("Usage: zlox [script]\n", .{});
-        return;
-    } else if (args.len == 2) {
-        try runFile(args[1]);
-    } else {
-        try runPrompt();
+    switch (args.len) {
+        1 => try runPrompt(),
+        2 => try runFile(args[1]),
+        else => {
+            try w.print("Usage: zlox [script]\n", .{});
+            try w.flush();
+        },
     }
 }
 
@@ -52,17 +53,13 @@ fn runFile(path: []const u8) !void {
 }
 
 fn runPrompt() !void {
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-
-    var stdin_buffer: [1024]u8 = undefined;
-    var stdin_reader = std.fs.File.stdin().reader(&stdin_buffer);
+    var stdin_buf: [1024]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&stdin_buf);
     const stdin = &stdin_reader.interface;
 
     while (true) {
-        try stdout.print("lox> ", .{});
-        try stdout.flush();
+        try w.print("lox> ", .{});
+        try w.flush();
 
         const line = stdin.takeDelimiterExclusive('\n') catch |err| switch (err) {
             error.EndOfStream => break,
@@ -83,11 +80,11 @@ fn run(source: []const u8) !void {
     defer _ = scanner.deinit();
 
     while (!scanner.isAtEnd()) {
-
         try scanner.scanTokens();
     }
 
     for (scanner.tokens.items) |token| {
-        print("{any}\n", .{token});
+        try w.print("{any}\n", .{token});
+        try w.flush();
     }
 }
