@@ -2,6 +2,7 @@ const std = @import("std");
 const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
+const Literal = @import("token.zig").Literals;
 
 const numbers = [_]u8{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
 
@@ -48,7 +49,7 @@ pub const Scanner = struct {
             '+' => self.makeToken(.PLUS, null),
             ';' => self.makeToken(.SEMICOLON, null),
             '*' => self.makeToken(.STAR, null),
-            '"' => self.makeToken(self.stringLiteral(), self.source[self.start+1..self.current-1]),
+            '"' => self.makeToken(self.stringLiteral(), .{ .string = self.source[self.start+1..self.current-1]}),
             '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, null),
             '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, null) else self.makeToken(.BANG, null),
             '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, null) else self.makeToken(.EQUAL, null),
@@ -60,7 +61,7 @@ pub const Scanner = struct {
             '\n' => self.newLineLexeme(),
             else =>  
                 if (isNumber(c))
-                    self.makeToken(self.numberLiteral(), self.source[self.start..self.current])
+                    self.makeToken(self.numberLiteral(), .{ .number = std.fmt.parseFloat(f64, self.source[self.start..self.current]) catch unreachable})
                 else 
                     self.undefinedLexeme(),
         };
@@ -153,13 +154,13 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: ?TokenType, literal: ?[]const u8) ?Token {
+    fn makeToken(self: *Scanner, t: ?TokenType, literal: ?Literal) ?Token {
         if (t == null) return null;
 
         return Token{
             .type = t.?,
             .lexeme = self.source[self.start..self.current],
-            .literal = if (literal == null) "" else literal.?,
+            .literal = if (literal == null) .{ .string = ""} else literal.?,
             .line = self.line,
             .column = self.column,
         };
