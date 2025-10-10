@@ -3,6 +3,8 @@ const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 
+const numbers = [_]u8{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9'};
+
 pub const Scanner = struct {
     source: []const u8,
     tokens: std.ArrayList(Token),
@@ -56,7 +58,11 @@ pub const Scanner = struct {
             '\r' => null,
             '\t' => null,
             '\n' => self.newLineLexeme(),
-            else => self.undefinedLexeme(),
+            else =>  
+                if (isNumber(c))
+                    self.makeToken(self.numberLiteral(), self.source[self.start..self.current])
+                else 
+                    self.undefinedLexeme(),
         };
     }
 
@@ -76,6 +82,25 @@ pub const Scanner = struct {
             _ = self.advance();
         }
         return null;
+    }
+
+    fn isNumber(token: u8) bool { 
+        for (numbers) |number| {
+            if (token == number) return true;
+        }
+        
+        return false;
+    }
+
+    fn numberLiteral(self: *Scanner) ?TokenType {
+        while(isNumber(self.peek())) _ = self.advance();
+
+        if (self.peek () == '.' and isNumber(self.peekNext())) {
+            _ = self.advance();
+            while (isNumber(self.peek())) _ = self.advance();
+        }
+
+        return .NUMBER;
     }
 
     fn stringLiteral(self: *Scanner) ?TokenType {
@@ -104,6 +129,11 @@ pub const Scanner = struct {
     fn peek(self: *Scanner) u8 {
         if (self.isAtEnd()) return 0;
         return self.source[self.current];
+    }
+
+    fn peekNext(self: *Scanner) u8 {
+        if (self.current + 1 >= self.source.len) return '0';
+        return self.source[self.current+1];
     }
 
     fn isAtEnd(self: *Scanner) bool {
