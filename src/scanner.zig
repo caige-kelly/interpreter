@@ -3,6 +3,7 @@ const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Literal = @import("token.zig").Literals;
+const Keywords = @import("token.zig").Keywords;
 
 const array_buf = 4096; // 4 Kib just cause
 
@@ -65,9 +66,33 @@ pub const Scanner = struct {
             else => if (isNumber(c)) {
                 try self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
             } else if (isAlpha(c)) {
-                try self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] });
+                try self.makeToken(try self.identifier(), .{ .string = self.source[self.start..self.current] });
             } else self.undefinedLexeme(),
         };
+    }
+
+    fn scanKeyword(word: []const u8) !TokenType {
+        var buf: [1024]u8 = undefined;
+        const keyword: Keywords = std.meta.stringToEnum(Keywords, std.ascii.upperString(&buf, word)) orelse return error.StringToEnum;
+
+        switch (keyword) {
+            .AND => return .AND,
+            .CLASS => return .CLASS,
+            .ELSE => return .ELSE,
+            .FALSE => return .FALSE,
+            .FUN => return .FUN,
+            .FOR => return .FOR,
+            .IF => return .IF,
+            .NIL => return .NIL,
+            .OR => return .OR,
+            .PRINT => return .PRINT,
+            .RETURN => return .RETURN,
+            .SUPER => return .SUPER,
+            .THIS => return .THIS,
+            .TRUE => return .TRUE,
+            .VAR => return .VAR,
+            .WHILE => return .WHILE,
+        }
     }
 
     fn newLine(self: *Scanner) void {
@@ -88,11 +113,12 @@ pub const Scanner = struct {
         return;
     }
 
-    fn identifier(self: *Scanner) TokenType {
+    fn identifier(self: *Scanner) !TokenType {
         while (isAlpha(self.peek()) or isNumber(self.peek())) {
             _ = self.advance();
         }
-        return .IDENTIFIER;
+
+        return try scanKeyword(self.source[self.start..self.current]);
     }
 
     fn isAlpha(token: u8) bool {

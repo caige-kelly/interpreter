@@ -1,6 +1,25 @@
 // All things related to tokens
 pub const Literals = union(enum) { number: f64, string: []const u8, none: void };
 
+pub const Keywords = enum(u8) {
+    AND,
+    CLASS,
+    ELSE,
+    FALSE,
+    FUN,
+    FOR,
+    IF,
+    NIL,
+    OR,
+    PRINT,
+    RETURN,
+    SUPER,
+    THIS,
+    TRUE,
+    VAR,
+    WHILE,
+};
+
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
