@@ -1,14 +1,19 @@
 // All things related to tokens
+pub const Literals = union(enum) { number: f64, string: []const u8, none: void, keyword: []const u8 };
 
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
-    literal: []const u8 = "",
+    literal: Literals,
     line: usize,
     column: usize,
 
-    pub fn toString(self: *Token) void {
-        _ = self;
+    pub fn getNLiteral(self: Token) f64 {
+        return self.literal.number;
+    }
+
+    pub fn getSLiteral(self: Token) []const u8 {
+        return self.literal.string;
     }
 };
 

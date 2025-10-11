@@ -1,5 +1,5 @@
 const std = @import("std");
-const _scanner = @import("./scanner.zig").Scanner;
+const Scanner = @import("./scanner.zig").Scanner;
 
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
@@ -24,25 +24,23 @@ pub fn main() !void {
 }
 
 fn runFile(path: []const u8) !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    const f = try std.fs.cwd().openFile(path, .{});
+    defer f.close();
 
-    // Read the file
-    const file = try std.fs.cwd().openFile(path, .{});
-    defer file.close();
+    const stat = try f.stat();
 
-    const stat = try file.stat();
-
-    // Fail if file larger than 2 GiB
     if (stat.size > max_size) {
         return error.FileTooLarge;
     }
+
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
 
     const allocator = gpa.allocator();
     const bytes = try allocator.alloc(u8, stat.size);
     defer allocator.free(bytes);
 
-    _ = try file.readAll(bytes);
+    _ = try f.readAll(bytes);
 
     try run(bytes);
 }
@@ -73,15 +71,20 @@ fn run(source: []const u8) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var scanner = try _scanner.init(source, gpa.allocator());
+    var scanner = try Scanner.init(source, gpa.allocator());
     defer _ = scanner.deinit();
 
-    try scanner.scanTokens();
+    const tokens = try scanner.scanTokens();
 
     var stdout = std.fs.File.stdout().writer(&.{});
     var w = &stdout.interface;
 
-    for (scanner.tokens.items) |token| {
-        try w.print("{any}\n", .{token});
+    for (tokens) |token| {
+        switch (token.literal) {
+            .number => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {d}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getNLiteral(), token.line, token.column }),
+            .string => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral(), token.line, token.column }),
+            .keyword => try w.print("{{ type = .{s}, lexeme = '{s}', literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral(), token.line, token.column }),
+            .none => try w.print("{{ type = .{s}, lexeme = '{s}', line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.line, token.column }),
+        }
     }
 }
