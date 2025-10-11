@@ -3,7 +3,7 @@ const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Literal = @import("token.zig").Literals;
-const Keywords = @import("token.zig").Keywords;
+const KeywordMap = @import("token.zig").KeywordMap;
 
 const array_buf = 4096; // 4 Kib just cause
 
@@ -42,56 +42,32 @@ pub const Scanner = struct {
     pub fn scanToken(self: *Scanner) !void {
         const c = self.advance();
 
-        try switch (c) {
-            '(' => self.makeToken(.LEFT_PAREN, .none),
-            ')' => self.makeToken(.RIGHT_PAREN, .none),
-            '{' => self.makeToken(.LEFT_BRACE, .none),
-            '}' => self.makeToken(.RIGHT_BRACE, .none),
-            ',' => self.makeToken(.COMMA, .none),
-            '.' => self.makeToken(.DOT, .none),
-            '-' => self.makeToken(.MINUS, .none),
-            '+' => self.makeToken(.PLUS, .none),
-            ';' => self.makeToken(.SEMICOLON, .none),
-            '*' => self.makeToken(.STAR, .none),
-            '"' => self.makeToken(try self.stringLiteral(), .{ .string = self.source[self.start + 1 .. self.current - 1] }),
-            '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
-            '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
-            '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
-            '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL, .none) else self.makeToken(.LESS, .none),
-            '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL, .none) else self.makeToken(.GREATER, .none),
+        switch (c) {
+            '(' => return self.makeToken(.LEFT_PAREN, .none),
+            ')' => return self.makeToken(.RIGHT_PAREN, .none),
+            '{' => return self.makeToken(.LEFT_BRACE, .none),
+            '}' => return self.makeToken(.RIGHT_BRACE, .none),
+            ',' => return self.makeToken(.COMMA, .none),
+            '.' => return self.makeToken(.DOT, .none),
+            '-' => return self.makeToken(.MINUS, .none),
+            '+' => return self.makeToken(.PLUS, .none),
+            ';' => return self.makeToken(.SEMICOLON, .none),
+            '*' => return self.makeToken(.STAR, .none),
+            '"' => return self.makeToken(try self.stringLiteral(), .{ .string = self.source[self.start + 1 .. self.current - 1] }),
+            '/' => return if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
+            '!' => return if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
+            '=' => return if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
+            '<' => return if (self.match('=')) self.makeToken(.LESS_EQUAL, .none) else self.makeToken(.LESS, .none),
+            '>' => return if (self.match('=')) self.makeToken(.GREATER_EQUAL, .none) else self.makeToken(.GREATER, .none),
             ' ' => return,
             '\r' => return,
             '\t' => return,
-            '\n' => self.newLine(),
+            '\n' => return self.newLine(),
             else => if (isNumber(c)) {
-                try self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
+                return self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
             } else if (isAlpha(c)) {
-                try self.makeToken(try self.identifier(), .{ .string = self.source[self.start..self.current] });
-            } else self.undefinedLexeme(),
-        };
-    }
-
-    fn scanKeyword(word: []const u8) !TokenType {
-        var buf: [1024]u8 = undefined;
-        const keyword: Keywords = std.meta.stringToEnum(Keywords, std.ascii.upperString(&buf, word)) orelse return error.StringToEnum;
-
-        switch (keyword) {
-            .AND => return .AND,
-            .CLASS => return .CLASS,
-            .ELSE => return .ELSE,
-            .FALSE => return .FALSE,
-            .FUN => return .FUN,
-            .FOR => return .FOR,
-            .IF => return .IF,
-            .NIL => return .NIL,
-            .OR => return .OR,
-            .PRINT => return .PRINT,
-            .RETURN => return .RETURN,
-            .SUPER => return .SUPER,
-            .THIS => return .THIS,
-            .TRUE => return .TRUE,
-            .VAR => return .VAR,
-            .WHILE => return .WHILE,
+                return self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] });
+            } else return self.undefinedLexeme(),
         }
     }
 
@@ -113,20 +89,21 @@ pub const Scanner = struct {
         return;
     }
 
-    fn identifier(self: *Scanner) !TokenType {
+    fn identifier(self: *Scanner) TokenType {
         while (isAlpha(self.peek()) or isNumber(self.peek())) {
             _ = self.advance();
         }
 
-        return try scanKeyword(self.source[self.start..self.current]);
+        const word = self.source[self.start..self.current];
+        return KeywordMap.get(word) orelse .IDENTIFIER;
     }
 
     fn isAlpha(token: u8) bool {
-        return (token >= 'a' and token <= 'z') or (token >= 'A' and token <= 'Z') or (token == '_');
+        return std.ascii.isAlphabetic(token) or token == '_';
     }
 
     fn isNumber(token: u8) bool {
-        return (token >= '0' and token <= '9');
+        return std.ascii.isDigit(token);
     }
 
     fn numberLiteral(self: *Scanner) TokenType {
