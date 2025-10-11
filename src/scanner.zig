@@ -4,6 +4,8 @@ const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Literal = @import("token.zig").Literals;
 
+const array_buf = 4096; // 4 Kib just cause
+
 pub const Scanner = struct {
     source: []const u8,
     tokens: std.ArrayList(Token),
@@ -14,7 +16,7 @@ pub const Scanner = struct {
     column: usize = 0,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) !Scanner {
-        return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, 4096) };
+        return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, array_buf) };
     }
 
     pub fn deinit(self: *Scanner) void {
@@ -24,19 +26,17 @@ pub const Scanner = struct {
     pub fn scanTokens(self: *Scanner) ![]Token {
         while (!self.isAtEnd()) {
             self.start = self.current;
-            const t = self.scanToken();
-            if (t != null) try self.tokens.append(self.allocator, t.?) else continue;
+            try self.scanToken();
         }
 
-        try self.tokens.append(self.allocator, self.endOfFie().?);
+        try self.makeToken(.EOF, .none);
         return self.tokens.items;
     }
 
-    pub fn scanToken(self: *Scanner) ?Token {
+    pub fn scanToken(self: *Scanner) !void {
         const c = self.advance();
 
-        return switch (c) {
-            // Single-character tokens
+        try switch (c) {
             '(' => self.makeToken(.LEFT_PAREN, .none),
             ')' => self.makeToken(.RIGHT_PAREN, .none),
             '{' => self.makeToken(.LEFT_BRACE, .none),
@@ -47,36 +47,36 @@ pub const Scanner = struct {
             '+' => self.makeToken(.PLUS, .none),
             ';' => self.makeToken(.SEMICOLON, .none),
             '*' => self.makeToken(.STAR, .none),
-            '"' => self.makeToken(self.stringLiteral(), .string),
+            '"' => self.makeToken(try self.stringLiteral(), .{ .string = self.source[self.start + 1 .. self.current - 1] }),
             '/' => if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
             '!' => if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
             '=' => if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
             '<' => if (self.match('=')) self.makeToken(.LESS_EQUAL, .none) else self.makeToken(.LESS, .none),
             '>' => if (self.match('=')) self.makeToken(.GREATER_EQUAL, .none) else self.makeToken(.GREATER, .none),
-            ' ' => null,
-            '\r' => null,
-            '\t' => null,
-            '\n' => self.newLineLexeme(),
-            else => if (isNumber(c)) self.makeToken(self.numberLiteral(), .number) else if (isAlpha(c)) self.makeToken(self.identifier(), .keyword) else self.undefinedLexeme(),
+            ' ' => return,
+            '\r' => return,
+            '\t' => return,
+            '\n' => self.newLine(),
+            else => if (isNumber(c)) self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) }) else if (isAlpha(c)) self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] }) else self.undefinedLexeme(),
         };
     }
 
-    fn newLineLexeme(self: *Scanner) ?Token {
+    fn newLine(self: *Scanner) void {
         self.column = 0;
         self.line += 1;
-        return null;
+        return;
     }
 
-    fn undefinedLexeme(self: *Scanner) ?Token {
+    fn undefinedLexeme(self: *Scanner) !void {
         errors.report(self.line, "", "Unexpected character.");
-        return null;
+        return error.UnexpectedCharacter;
     }
 
-    fn commentLexeme(self: *Scanner) ?Token {
+    fn commentLexeme(self: *Scanner) void {
         while (self.peek() != '\n' and !self.isAtEnd()) {
             _ = self.advance();
         }
-        return null;
+        return;
     }
 
     fn identifier(self: *Scanner) TokenType {
@@ -87,20 +87,12 @@ pub const Scanner = struct {
         return .IDENTIFIER;
     }
 
-    fn isAlpha(token: anytype) bool {
-        if (token >= 'a' and token <= 'z') return true;
-        if (token >= 'A' and token <= 'Z') return true;
-        if (token == '_') return true;
-
-        return false;
+    fn isAlpha(token: u8) bool {
+        return (token >= 'a' and token <= 'z') or (token >= 'A' and token <= 'Z') or (token == '_');
     }
 
-    fn isNumber(token: anytype) bool {
-        if (token >= '0' and token <= '9') {
-            return true;
-        } else {
-            return false;
-        }
+    fn isNumber(token: u8) bool {
+        return token >= '0' and token <= '9';
     }
 
     fn numberLiteral(self: *Scanner) TokenType {
@@ -114,7 +106,7 @@ pub const Scanner = struct {
         return .NUMBER;
     }
 
-    fn stringLiteral(self: *Scanner) TokenType {
+    fn stringLiteral(self: *Scanner) !TokenType {
         while (self.peek() != '"' and !self.isAtEnd()) {
             if (self.peek() == '\n') self.line += 1;
             _ = self.advance();
@@ -122,7 +114,7 @@ pub const Scanner = struct {
 
         if (self.isAtEnd()) {
             errors.report(self.line, "", "Unterminatd string.");
-            std.process.exit(1);
+            return error.UnterminatedString;
         }
 
         _ = self.advance();
@@ -138,7 +130,7 @@ pub const Scanner = struct {
     }
 
     fn peek(self: *Scanner) u8 {
-        if (self.isAtEnd()) return 0;
+        if (self.isAtEnd()) return '0';
         return self.source[self.current];
     }
 
@@ -151,11 +143,6 @@ pub const Scanner = struct {
         return self.current >= self.source.len;
     }
 
-    fn endOfFie(self: *Scanner) ?Token {
-        //self.start = self.current;
-        return self.makeToken(.EOF, .none);
-    }
-
     fn match(self: *Scanner, expected: u8) bool {
         if (self.isAtEnd()) return false;
         if (self.source[self.current] != expected) return false;
@@ -165,16 +152,8 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: TokenType, L: anytype) ?Token {
-        const literal = switch (L) {
-            .number => Literal{ .number = std.fmt.parseFloat(f64, self.source[self.start..self.current]) catch unreachable },
-            .string => Literal{ .string = self.source[self.start + 1 .. self.current - 1] },
-            .keyword => Literal{ .string = self.source[self.start..self.current] },
-            .none => .none,
-            else => .none,
-        };
-
-        return Token{
+    fn makeToken(self: *Scanner, t: TokenType, literal: Literal) !void {
+        const token = Token{
             .type = t,
             .lexeme = self.source[self.start..self.current],
             .literal = literal,
