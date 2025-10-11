@@ -1,5 +1,5 @@
 // All things related to tokens
-pub const Literals = union(enum) { number: f64, string: []const u8, none: void, keyword: []const u8 };
+pub const Literals = union(enum) { number: f64, string: []const u8, none: void };
 
 pub const Token = struct {
     type: TokenType,
@@ -8,16 +8,22 @@ pub const Token = struct {
     line: usize,
     column: usize,
 
-    pub fn getNLiteral(self: Token) f64 {
-        return self.literal.number;
+    pub fn getNLiteral(self: Token) ?f64 {
+        return switch (self.literal) {
+            .number => |n| n,
+            else => null,
+        };
     }
 
-    pub fn getSLiteral(self: Token) []const u8 {
-        return self.literal.string;
+    pub fn getSLiteral(self: Token) ?[]const u8 {
+        return switch (self.literal) {
+            .string => |s| s,
+            else => null,
+        };
     }
 };
 
-pub const TokenType = enum {
+pub const TokenType = enum(u8) {
     // Single-character tokens.
     LEFT_PAREN,
     RIGHT_PAREN,

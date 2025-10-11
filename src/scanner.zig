@@ -14,6 +14,7 @@ pub const Scanner = struct {
     current: usize = 0,
     line: usize = 1,
     column: usize = 0,
+    start_column: usize = 0,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) !Scanner {
         return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, array_buf) };
@@ -26,10 +27,14 @@ pub const Scanner = struct {
     pub fn scanTokens(self: *Scanner) ![]Token {
         while (!self.isAtEnd()) {
             self.start = self.current;
+            self.start_column = self.column;
             try self.scanToken();
         }
 
+        self.start = self.current;
+        self.start_column = self.column;
         try self.makeToken(.EOF, .none);
+
         return self.tokens.items;
     }
 
@@ -57,7 +62,11 @@ pub const Scanner = struct {
             '\r' => return,
             '\t' => return,
             '\n' => self.newLine(),
-            else => if (isNumber(c)) self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) }) else if (isAlpha(c)) self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] }) else self.undefinedLexeme(),
+            else => if (isNumber(c)) {
+                try self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
+            } else if (isAlpha(c)) {
+                try self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] });
+            } else self.undefinedLexeme(),
         };
     }
 
@@ -73,7 +82,7 @@ pub const Scanner = struct {
     }
 
     fn commentLexeme(self: *Scanner) void {
-        while (self.peek() != '\n' and !self.isAtEnd()) {
+        while (!self.isAtEnd() and self.peek() != '\n') {
             _ = self.advance();
         }
         return;
@@ -83,7 +92,6 @@ pub const Scanner = struct {
         while (isAlpha(self.peek()) or isNumber(self.peek())) {
             _ = self.advance();
         }
-
         return .IDENTIFIER;
     }
 
@@ -92,7 +100,7 @@ pub const Scanner = struct {
     }
 
     fn isNumber(token: u8) bool {
-        return token >= '0' and token <= '9';
+        return (token >= '0' and token <= '9');
     }
 
     fn numberLiteral(self: *Scanner) TokenType {
@@ -107,7 +115,7 @@ pub const Scanner = struct {
     }
 
     fn stringLiteral(self: *Scanner) !TokenType {
-        while (self.peek() != '"' and !self.isAtEnd()) {
+        while (!self.isAtEnd() and self.peek() != '"') {
             if (self.peek() == '\n') self.line += 1;
             _ = self.advance();
         }
@@ -130,12 +138,12 @@ pub const Scanner = struct {
     }
 
     fn peek(self: *Scanner) u8 {
-        if (self.isAtEnd()) return '0';
+        if (self.isAtEnd()) return 0;
         return self.source[self.current];
     }
 
     fn peekNext(self: *Scanner) u8 {
-        if (self.current + 1 >= self.source.len) return '0';
+        if (self.current + 1 >= self.source.len) return 0;
         return self.source[self.current + 1];
     }
 
@@ -158,7 +166,7 @@ pub const Scanner = struct {
             .lexeme = self.source[self.start..self.current],
             .literal = literal,
             .line = self.line,
-            .column = self.column,
+            .column = self.start_column,
         };
 
         try self.tokens.append(self.allocator, token);
