@@ -7,23 +7,6 @@ pub fn converter(expr: *const Ast.Expr, allocator: std.mem.Allocator) !*Ast.Expr
             const left_expr = try converter(expr.pipe.left, allocator);
             const right_expr = try converter(expr.pipe.right, allocator);
 
-            if (right_expr.* == .call) {
-                const old_args = right_expr.call.args;
-                const new_len = old_args.len + 1;
-                const args = try allocator.alloc(Ast.Expr, new_len);
-
-                std.mem.copyForwards(Ast.Expr, args[0..old_args.len], old_args);
-                args[old_args.len] = left_expr.*;
-
-                const new_call = try allocator.create(Ast.Expr);
-
-                new_call.* = Ast.Expr{
-                    .call = .{ .callee = right_expr.call.callee, .args = args },
-                };
-
-                return new_call;
-            }
-
             const args_slice = try allocator.alloc(Ast.Expr, 1);
             args_slice[0] = left_expr.*;
 

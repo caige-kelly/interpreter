@@ -1,14 +1,15 @@
-// Basic literal expressions
-//
-42
+
+@Args.option config
+|> @Args.Start
+|> @Args.Start
+
+@Args.option config|> @Args.Start|> @Args.Start
+
 this
-"that"
-true
-false
-none
-function arg1 arg2
-parse json |> @File.write "./somewhere.txt"
 
-data |> f |> g
-
-data |> encode |> try @File.write "./out.log"
+//[parser] >>> start expression (token=AT)
+//[parser] call arg detected (token=IDENTIFIER)
+//[parser] call built (token=PIPE)
+//[parser] built PIPE node (next=PIPE)
+//[parser] built PIPE node (next=EOF)
+//[parser] <<< end expression (token=EOF)

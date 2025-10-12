@@ -9,21 +9,32 @@ pub const Parser = struct {
     current: usize = 0,
     allocator: std.mem.Allocator,
 
+    fn debug(self: *Parser, msg: []const u8) void {
+        std.debug.print("[parser] {s} (token={s})\n", .{ msg, @tagName(self.peek().type) });
+    }
+
     pub fn init(tokens: []const Token, allocator: std.mem.Allocator) Parser {
         return Parser{ .tokens = tokens, .allocator = allocator };
     }
 
     pub fn parse(self: *Parser) ![]Ast.Expr {
-        var expressions = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 0);
+        var exprs = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 0);
 
         while (!self.isAtEnd()) {
-            if (self.match(.NEWLINE)) continue;
+            //kip blank lines before an expr
+            while (self.check(.NEWLINE)) _ = self.advance();
+            if (self.isAtEnd()) break;
 
             const expr = try self.parseExpression();
-            try expressions.append(self.allocator, expr);
-        }
+            try exprs.append(self.allocator, expr);
 
-        return expressions.toOwnedSlice(self.allocator);
+            // consume newlines, but continue only if it's a continuation (e.g. next token is PIPE)
+            while (self.check(.NEWLINE)) {
+                _ = self.advance();
+                if (!self.check(.PIPE)) break; // not a continuation → stop current expression
+            }
+        }
+        return exprs.toOwnedSlice(self.allocator);
     }
 
     fn parseExpression(self: *Parser) !Ast.Expr {
@@ -35,17 +46,14 @@ pub const Parser = struct {
 
         while (self.match(.PIPE)) {
             const right = try self.parseCall();
-            const left_ptr = try self.allocator.create(Ast.Expr);
-            left_ptr.* = expr;
 
-            const right_ptr = try self.allocator.create(Ast.Expr);
-            right_ptr.* = right;
+            const lp = try self.allocator.create(Ast.Expr);
+            lp.* = expr;
+            const rp = try self.allocator.create(Ast.Expr);
+            rp.* = right;
 
-            expr = Ast.Expr{
-                .pipe = .{ .left = left_ptr, .right = right_ptr },
-            };
+            expr = Ast.Expr{ .pipe = .{ .left = lp, .right = rp } };
         }
-
         return expr;
     }
 
@@ -53,6 +61,7 @@ pub const Parser = struct {
         var expr = try self.parseTry();
 
         while (self.nextLooksLikeArg()) {
+            self.debug("call arg detected");
             const arg = try self.parseTry();
 
             const callee_ptr = try self.allocator.create(Ast.Expr);
@@ -71,6 +80,7 @@ pub const Parser = struct {
                     .args = arg_slice,
                 },
             };
+            self.debug("call built");
         }
 
         return expr;
@@ -104,11 +114,14 @@ pub const Parser = struct {
                 _ = self.consume(.DOT, "expected '.' after monad namespace");
                 const func = self.consume(.IDENTIFIER, "expected function name after '.'");
 
+                //std.debug.print("{s}\n", .{self.peek().lexeme});
+
                 // Build "@Namespace.func" into arena-owned memory
                 const full = try std.fmt.allocPrint(self.allocator, "@{s}.{s}", .{ ns.lexeme, func.lexeme });
                 return Ast.Expr{ .identifier = full };
             },
             else => {
+                //std.debug.print("{}\n", .{token});
                 errors.report(token.line, "parse", "Unexpected token in primary expression");
                 return error.UnexpectedToken;
             },
@@ -119,8 +132,31 @@ pub const Parser = struct {
     // Utility methods
     // -------------------------------
 
+    fn skipNewLines(self: *Parser) void {
+        while (self.check(.NEWLINE)) _ = self.advance();
+    }
+
+    fn isContinuation(self: *Parser) bool {
+        var i = self.current;
+        while (i < self.tokens.len and self.tokens[i].type == .NEWLINE) {
+            i += 1;
+        }
+
+        if (i < self.tokens.len) {
+            const t = self.tokens[i].type;
+            return t == .PIPE or t == .ARROW;
+        }
+
+        return false;
+    }
+
     fn nextLooksLikeArg(self: *Parser) bool {
         const next = self.peek();
+
+        if (self.peek().type == .NEWLINE) {
+            _ = self.advance();
+        }
+
         return switch (next.type) {
             .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT => true,
             else => false,

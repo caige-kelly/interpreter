@@ -88,6 +88,7 @@ pub const Scanner = struct {
         self.column = 0;
         self.line += 1;
         try self.makeToken(.NEWLINE, .none);
+        return;
     }
 
     fn undefinedLexeme(self: *Scanner) !void {
