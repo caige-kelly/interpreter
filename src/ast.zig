@@ -1,3 +1,5 @@
+const std = @import("std");
+
 const TokenType = @import("token.zig").TokenType;
 
 pub const Literal = union(enum) {
@@ -68,9 +70,47 @@ pub const TryExpr = struct {
 };
 
 pub const MatchExpr = struct {
-    target: *Expr,
-    ok_param: []const u8,
-    ok_body: *Expr,
-    err_param: []const u8,
-    err_body: *Expr,
+    value: *Expr,
+    branches: []MatchBranch,
 };
+
+pub const MatchBranch = struct {
+    pattern: []const u8,
+    binding: ?[]const u8,
+    expr: *Expr,
+};
+
+pub fn debugPrint(expr: Expr, depth: usize) !void {
+    var indent_buf: [64]u8 = undefined; // supports up to 32 levels (2 spaces each)
+    const indent = indent_buf[0..@min(depth * 2, indent_buf.len)];
+
+    @memset(indent, ' ');
+
+    switch (expr) {
+        .literal => |lit| {
+            switch (lit) {
+                .number => std.debug.print("{s}Literal: {d}\n", .{ indent, lit.number }),
+                .string => std.debug.print("{s}Literal: \"{s}\"\n", .{ indent, lit.string }),
+                .boolean => std.debug.print("{s}Bool: {}\n", .{ indent, lit.boolean }),
+                .none => std.debug.print("{s}None: {}\n", .{ indent, lit.none }),
+                else => std.debug.print("{s}Literal: (complex)\n", .{indent}),
+            }
+        },
+        .identifier => std.debug.print("{s}Identifier: {s}\n", .{ indent, expr.identifier }),
+        .pipe => {
+            std.debug.print("{s}Pipe:\n", .{indent});
+            try debugPrint(expr.pipe.left.*, depth + 1);
+            try debugPrint(expr.pipe.right.*, depth + 1);
+        },
+        .try_expr => {
+            std.debug.print("{s}Try:\n", .{indent});
+            try debugPrint(expr.try_expr.expr.*, depth + 1);
+        },
+        .call => {
+            std.debug.print("{s}Call:\n", .{indent});
+            try debugPrint(expr.call.callee.*, depth + 1);
+            for (expr.call.args) |arg| try debugPrint(arg, depth + 1);
+        },
+        else => std.debug.print("{s}Expr (unimplemented)\n", .{indent}),
+    }
+}

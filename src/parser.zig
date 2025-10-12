@@ -13,11 +13,12 @@ pub const Parser = struct {
         return Parser{ .tokens = tokens, .allocator = allocator };
     }
 
-    // Entry point: parse the full program
     pub fn parse(self: *Parser) ![]Ast.Expr {
         var expressions = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 0);
 
         while (!self.isAtEnd()) {
+            if (self.match(.NEWLINE)) continue;
+
             const expr = try self.parseExpression();
             try expressions.append(self.allocator, expr);
         }
@@ -26,7 +27,66 @@ pub const Parser = struct {
     }
 
     fn parseExpression(self: *Parser) !Ast.Expr {
-        return self.parsePrimary(); // start small
+        return self.parsePipe();
+    }
+
+    fn parsePipe(self: *Parser) !Ast.Expr {
+        var expr = try self.parseCall();
+
+        while (self.match(.PIPE)) {
+            const right = try self.parseCall();
+            const left_ptr = try self.allocator.create(Ast.Expr);
+            left_ptr.* = expr;
+
+            const right_ptr = try self.allocator.create(Ast.Expr);
+            right_ptr.* = right;
+
+            expr = Ast.Expr{
+                .pipe = .{ .left = left_ptr, .right = right_ptr },
+            };
+        }
+
+        return expr;
+    }
+
+    fn parseCall(self: *Parser) !Ast.Expr {
+        var expr = try self.parseTry();
+
+        while (self.nextLooksLikeArg()) {
+            const arg = try self.parseTry();
+
+            const callee_ptr = try self.allocator.create(Ast.Expr);
+            callee_ptr.* = expr;
+
+            var args = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 0);
+            defer args.deinit(self.allocator);
+
+            try args.append(self.allocator, arg);
+
+            const arg_slice = try args.toOwnedSlice(self.allocator);
+
+            expr = Ast.Expr{
+                .call = .{
+                    .callee = callee_ptr,
+                    .args = arg_slice,
+                },
+            };
+        }
+
+        return expr;
+    }
+
+    fn parseTry(self: *Parser) !Ast.Expr {
+        if (self.match(.TRY)) {
+            const inner = try self.parsePrimary();
+            const inner_ptr = try self.allocator.create(Ast.Expr);
+            inner_ptr.* = inner;
+
+            return Ast.Expr{
+                .try_expr = .{ .expr = inner_ptr },
+            };
+        }
+        return self.parsePrimary();
     }
 
     fn parsePrimary(self: *Parser) !Ast.Expr {
@@ -38,11 +98,46 @@ pub const Parser = struct {
             .TRUE => Ast.Expr{ .literal = .{ .boolean = true } },
             .FALSE => Ast.Expr{ .literal = .{ .boolean = false } },
             .NONE => Ast.Expr{ .literal = .{ .none = {} } },
+            .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
+            .AT => {
+                const ns = self.consume(.IDENTIFIER, "expected identifier after '@'");
+                _ = self.consume(.DOT, "expected '.' after monad namespace");
+                const func = self.consume(.IDENTIFIER, "expected function name after '.'");
+
+                // Build "@Namespace.func" into arena-owned memory
+                const full = try std.fmt.allocPrint(self.allocator, "@{s}.{s}", .{ ns.lexeme, func.lexeme });
+                return Ast.Expr{ .identifier = full };
+            },
             else => {
                 errors.report(token.line, "parse", "Unexpected token in primary expression");
                 return error.UnexpectedToken;
             },
         };
+    }
+
+    // -------------------------------
+    // Utility methods
+    // -------------------------------
+
+    fn nextLooksLikeArg(self: *Parser) bool {
+        const next = self.peek();
+        return switch (next.type) {
+            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT => true,
+            else => false,
+        };
+    }
+
+    fn match(self: *Parser, t: TokenType) bool {
+        if (self.check(t)) {
+            _ = self.advance();
+            return true;
+        }
+        return false;
+    }
+
+    fn check(self: *Parser, t: TokenType) bool {
+        if (self.isAtEnd()) return false;
+        return self.peek().type == t;
     }
 
     fn advance(self: *Parser) Token {
@@ -56,5 +151,13 @@ pub const Parser = struct {
 
     fn peek(self: *Parser) Token {
         return self.tokens[self.current];
+    }
+
+    fn consume(self: *Parser, t: TokenType, msg: []const u8) Token {
+        if (self.isAtEnd() or self.peek().type != t) {
+            errors.report(self.peek().line, "parse", msg);
+            return self.peek(); // you might prefer 'return error.UnexpectedToken'
+        }
+        return self.advance();
     }
 };

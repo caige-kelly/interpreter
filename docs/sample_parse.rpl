@@ -1,0 +1,16 @@
+// Basic literal expressions
+//
+42
+this
+"that"
+true
+false
+none
+
+function arg1 arg2
+
+parse json |> @File.write "./somewhere.txt"
+
+data |> f |> g
+
+data |> encode |> try @File.write "./out.log"

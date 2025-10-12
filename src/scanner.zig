@@ -79,7 +79,7 @@ pub const Scanner = struct {
             ' ' => return,
             '\r' => return,
             '\t' => return,
-            '\n' => return self.newLine(),
+            '\n' => return try self.newLine(),
             else => if (isNumber(c)) {
                 return self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
             } else if (isAlpha(c)) {
@@ -88,9 +88,10 @@ pub const Scanner = struct {
         }
     }
 
-    fn newLine(self: *Scanner) void {
+    fn newLine(self: *Scanner) !void {
         self.column = 0;
         self.line += 1;
+        try self.makeToken(.NEWLINE, .none);
     }
 
     fn undefinedLexeme(self: *Scanner) !void {
