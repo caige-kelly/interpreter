@@ -80,37 +80,64 @@ pub const MatchBranch = struct {
     expr: *Expr,
 };
 
-pub fn debugPrint(expr: Expr, depth: usize) !void {
-    var indent_buf: [64]u8 = undefined; // supports up to 32 levels (2 spaces each)
-    const indent = indent_buf[0..@min(depth * 2, indent_buf.len)];
-
-    @memset(indent, ' ');
+pub fn debugPrint(expr: Expr, depth: usize) void {
+    const prefix = makePrefix(depth);
 
     switch (expr) {
-        .literal => |lit| {
-            switch (lit) {
-                .number => std.debug.print("{s}Literal: {d}\n", .{ indent, lit.number }),
-                .string => std.debug.print("{s}Literal: \"{s}\"\n", .{ indent, lit.string }),
-                .boolean => std.debug.print("{s}Bool: {}\n", .{ indent, lit.boolean }),
-                .none => std.debug.print("{s}None: {}\n", .{ indent, lit.none }),
-                else => std.debug.print("{s}Literal: (complex)\n", .{indent}),
+        .literal => |lit| switch (lit) {
+            .number => std.debug.print("{s}Number: {}\n", .{ prefix, lit.number }),
+            .string => std.debug.print("{s}String: \"{s}\"\n", .{ prefix, lit.string }),
+            .boolean => std.debug.print("{s}Bool: {}\n", .{ prefix, lit.boolean }),
+            .none => std.debug.print("{s}None\n", .{prefix}),
+            else => std.debug.print("{s}Literal (complex)\n", .{prefix}),
+        },
+        .identifier => std.debug.print("{s} Identifier: {s}\n", .{ prefix, expr.identifier }),
+
+        .call => {
+            std.debug.print("{s}Call\n", .{prefix});
+            printBranch(depth, "callee");
+            debugPrint(expr.call.callee.*, depth + 1);
+            if (expr.call.args.len > 0) {
+                printBranch(depth, "args");
+                for (expr.call.args, 0..) |arg, i| {
+                    const connector = if (i == expr.call.args.len - 1) "└──" else "├──";
+                    std.debug.print("{s}{s} arg[{d}]:\n", .{ makePrefix(depth + 1), connector, i });
+                    debugPrint(arg, depth + 2);
+                }
             }
         },
-        .identifier => std.debug.print("{s}Identifier: {s}\n", .{ indent, expr.identifier }),
+
         .pipe => {
-            std.debug.print("{s}Pipe:\n", .{indent});
-            try debugPrint(expr.pipe.left.*, depth + 1);
-            try debugPrint(expr.pipe.right.*, depth + 1);
+            std.debug.print("{s}Pipe\n", .{prefix});
+            printBranch(depth, "left");
+            debugPrint(expr.pipe.left.*, depth + 1);
+            printBranch(depth, "right");
+            debugPrint(expr.pipe.right.*, depth + 1);
         },
+
         .try_expr => {
-            std.debug.print("{s}Try:\n", .{indent});
-            try debugPrint(expr.try_expr.expr.*, depth + 1);
+            std.debug.print("{s}Try\n", .{prefix});
+            printBranch(depth, "expr");
+            debugPrint(expr.try_expr.expr.*, depth + 1);
         },
-        .call => {
-            std.debug.print("{s}Call:\n", .{indent});
-            try debugPrint(expr.call.callee.*, depth + 1);
-            for (expr.call.args) |arg| try debugPrint(arg, depth + 1);
-        },
-        else => std.debug.print("{s}Expr (unimplemented)\n", .{indent}),
+
+        else => std.debug.print("{s}(Unhandled node)\n", .{prefix}),
     }
+}
+
+fn makePrefix(depth: usize) []const u8 {
+    return switch (depth) {
+        0 => "",
+        1 => "│ ",
+        else => {
+            var buf: [128]u8 = undefined;
+            const n = @min(buf.len, depth * 2);
+            @memset(buf[0..n], ' ');
+            return &buf;
+        },
+    };
+}
+
+fn printBranch(depth: usize, label: []const u8) void {
+    std.debug.print("{s}├── {s}\n", .{ makePrefix(depth), label });
 }

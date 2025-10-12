@@ -26,10 +26,6 @@ pub const Scanner = struct {
         };
     }
 
-    pub fn deinit(self: *Scanner) void {
-        self.tokens.deinit(self.allocator); // no per-string frees if you arena-allocation everything
-    }
-
     pub fn scanTokens(self: *Scanner) ![]Token {
         while (!self.isAtEnd()) {
             self.start = self.current;

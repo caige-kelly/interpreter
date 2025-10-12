@@ -71,22 +71,31 @@ fn runPrompt() !void {
 }
 
 fn run(source: []const u8) !void {
+    // init general allocator for arenas
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
 
-    var arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer arena.deinit();
+    // ------ Phase 1: Scan ---------
+    var scan_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer scan_arena.deinit();
 
-    var scanner = try Scanner.init(source, arena.allocator());
-    defer _ = scanner.deinit();
+    var scanner = try Scanner.init(source, scan_arena.allocator());
 
     const tokens = try scanner.scanTokens();
 
-    var parser = Parser.init(tokens, arena.allocator());
+    // ---------- Phase 2: Parse ---------
+    var parse_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer parse_arena.deinit();
+
+    var parser = Parser.init(tokens, parse_arena.allocator());
     const exprs = try parser.parse();
 
-    for (exprs) |expr| {
-        const e = try evaluator.converter(&expr, arena.allocator());
-        try Ast.debugPrint(e.*, 0);
+    // --------- Phase 3: Convert ---------
+    var evaluate_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer evaluate_arena.deinit();
+
+    for (exprs) |*expr| {
+        const e = try evaluator.converter(expr, evaluate_arena.allocator());
+        Ast.debugPrint(e.*, 0);
     }
 }
