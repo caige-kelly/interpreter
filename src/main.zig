@@ -2,6 +2,7 @@ const std = @import("std");
 const Scanner = @import("./scanner.zig").Scanner;
 const Parser = @import("./parser.zig").Parser;
 const Ast = @import("./ast.zig");
+const evaluator = @import("./evaluator.zig");
 
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
@@ -85,6 +86,7 @@ fn run(source: []const u8) !void {
     const exprs = try parser.parse();
 
     for (exprs) |expr| {
-        try Ast.debugPrint(expr, 0);
+        const e = try evaluator.converter(&expr, arena.allocator());
+        try Ast.debugPrint(e.*, 0);
     }
 }

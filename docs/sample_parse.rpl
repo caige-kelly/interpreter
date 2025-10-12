@@ -6,9 +6,7 @@ this
 true
 false
 none
-
 function arg1 arg2
-
 parse json |> @File.write "./somewhere.txt"
 
 data |> f |> g
