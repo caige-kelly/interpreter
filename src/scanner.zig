@@ -208,10 +208,18 @@ pub const Scanner = struct {
     }
 
     fn makeToken(self: *Scanner, t: TokenType, literal: Literal) !void {
+        var lit = literal;
+        switch (t) {
+            .TRUE => lit = .{ .boolean = true },
+            .FALSE => lit = .{ .boolean = false },
+            .NONE => lit = .{ .none = {} }, // empty struct for void
+            else => {},
+        }
+
         const token = Token{
             .type = t,
             .lexeme = self.source[self.start..self.current],
-            .literal = literal,
+            .literal = lit,
             .line = self.line,
             .column = self.start_column,
         };

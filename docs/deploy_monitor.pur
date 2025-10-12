@@ -99,5 +99,7 @@ restart_actions = {
   false: _ -> log "Restart disabled"
 }
 
+none
+
 // execute selected restart handler
 restart_actions[restart] _

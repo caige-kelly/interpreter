@@ -1,5 +1,6 @@
 const std = @import("std");
 const Scanner = @import("./scanner.zig").Scanner;
+const Parser = @import("./parser.zig").Parser;
 
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
@@ -79,16 +80,23 @@ fn run(source: []const u8) !void {
 
     const tokens = try scanner.scanTokens();
 
+    var parser = Parser.init(tokens, arena.allocator());
+    const expr = try parser.parse();
+
     var stdout = std.fs.File.stdout().writer(&.{});
     var w = &stdout.interface;
 
-    for (tokens) |token| {
-        switch (token.literal) {
-            .number => try w.print("{{ type = .{s}, lexeme = {s}, literal = {d}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getNLiteral().?, token.line, token.column }),
-            .string => try w.print("{{ type = .{s}, lexeme = {s}, literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral().?, token.line, token.column }),
-            .none => try w.print("{{ type = .{s}, lexeme = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.line, token.column }),
-            .result => return,
-            else => return,
-        }
+    for (expr) |x| {
+        try w.print("{any}\n", .{x});
     }
+
+    // for (tokens) |token| {
+    //     switch (token.literal) {
+    //         .number => try w.print("{{ type = .{s}, lexeme = {s}, literal = {d}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getNLiteral().?, token.line, token.column }),
+    //         .string => try w.print("{{ type = .{s}, lexeme = {s}, literal = {s}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getSLiteral().?, token.line, token.column }),
+    //         .none => try w.print("{{ type = .{s}, lexeme = {s}, literal = {any}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getVLiteral(), token.line, token.column }),
+    //         .boolean => try w.print("{{ type = .{s}, lexeme = {s}, literal = {any}, line = {d}, column = {d} }}\n", .{ @tagName(token.type), token.lexeme, token.getBLiteral().?, token.line, token.column }),
+    //         else => return,
+    //     }
+    // }
 }
