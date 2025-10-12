@@ -1,11 +1,11 @@
 
-@Args.option config
+something = @Args.option config
 |> @Args.Start
 |> @Args.Start
 
-@Args.option config|> @Args.Start|> @Args.Start
+all = @Args.option config|> @Args.Start|> @Args.Start
 
-this
+vars = this
 
 //[parser] >>> start expression (token=AT)
 //[parser] call arg detected (token=IDENTIFIER)

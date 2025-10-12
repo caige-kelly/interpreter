@@ -38,7 +38,36 @@ pub const Parser = struct {
     }
 
     fn parseExpression(self: *Parser) !Ast.Expr {
-        return self.parsePipe();
+        return self.parseAssignment();
+    }
+
+    fn parseAssignment(self: *Parser) !Ast.Expr {
+        const expr = try self.parsePipe(); // Parse the right-hand side first
+
+        // Now check if there's an assignment after it
+        if (self.match(.EQUAL)) {
+            const value = try self.parseAssignment(); // recursively parse right-hand expression
+            // left side must be an identifier, not a complex expr
+            switch (expr) {
+                .identifier => |name| {
+                    const value_ptr = try self.allocator.create(Ast.Expr);
+                    value_ptr.* = value;
+
+                    return Ast.Expr{
+                        .assign = .{
+                            .name = name,
+                            .value = value_ptr,
+                        },
+                    };
+                },
+                else => {
+                    errors.report(self.peek().line, "parse", "Invalid assignment target");
+                    return error.InvalidAssignmentTarget;
+                },
+            }
+        }
+
+        return expr;
     }
 
     fn parsePipe(self: *Parser) !Ast.Expr {

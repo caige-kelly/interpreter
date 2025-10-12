@@ -153,6 +153,16 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             debugPrint(expr.try_expr.expr.*, depth + 1);
         },
 
+        .assign => |a| {
+            indent(depth);
+            std.debug.print("Assign:\n", .{});
+            indent(depth + 1);
+            std.debug.print("name: {s}\n", .{a.name});
+            indent(depth + 1);
+            std.debug.print("value:\n", .{});
+            debugPrint(a.value.*, depth + 2);
+        },
+
         else => {
             indent(depth);
             std.debug.print("(Unhandled node)\n", .{});
