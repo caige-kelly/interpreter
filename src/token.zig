@@ -1,25 +1,12 @@
 const std = @import("std");
-
-// All things related to tokens
-pub const Literals = union(enum) { number: f64, string: []const u8, none: void };
+const Expr = @import("ast.zig").Expr;
+const Literals = @import("ast.zig").Literal;
 
 pub const KeywordMap = std.StaticStringMap(TokenType).initComptime(.{
-    .{ "and", .AND },
-    .{ "class", .CLASS },
-    .{ "else", .ELSE },
-    .{ "false", .FALSE },
-    .{ "for", .FOR },
-    .{ "fun", .FUN },
-    .{ "if", .IF },
-    .{ "nil", .NIL },
+    .{ "match", .MATCH },
+    .{ "try", .TRY },
     .{ "or", .OR },
-    .{ "print", .PRINT },
-    .{ "return", .RETURN },
-    .{ "super", .SUPER },
-    .{ "this", .THIS },
-    .{ "true", .TRUE },
-    .{ "var", .VAR },
-    .{ "while", .WHILE },
+    .{ "use", .USE },
 });
 
 pub const Token = struct {
@@ -44,52 +31,49 @@ pub const Token = struct {
     }
 };
 
-pub const TokenType = enum(u8) {
-    // Single-character tokens.
+pub const TokenType = enum {
+    // --- structural symbols ---
     LEFT_PAREN,
     RIGHT_PAREN,
+    LEFT_BRACKET,
+    RIGHT_BRACKET,
     LEFT_BRACE,
     RIGHT_BRACE,
     COMMA,
     DOT,
-    MINUS,
+    COLON,
     PLUS,
-    SEMICOLON,
-    SLASH,
+    MINUS,
     STAR,
-
-    // One or two character tokens.
-    BANG,
-    BANG_EQUAL,
+    SLASH,
+    CARET, // ^
+    ARROW, // ->
     EQUAL,
     EQUAL_EQUAL,
+    BANG,
+    BANG_EQUAL,
     GREATER,
     GREATER_EQUAL,
     LESS,
     LESS_EQUAL,
+    PIPE,
+    ESCAPE,
 
-    // Literals
+    // --- literals ---
     IDENTIFIER,
     STRING,
     NUMBER,
 
-    // Keywords.
-    AND,
-    CLASS,
-    ELSE,
-    FALSE,
-    FUN,
-    FOR,
-    IF,
-    NIL,
-    OR,
-    PRINT,
-    RETURN,
-    SUPER,
-    THIS,
-    TRUE,
-    VAR,
-    WHILE,
+    // --- prefixes ---
+    AT, // @   monad
+    HASH, // #   intrinsic
 
+    // --- keywords ---
+    MATCH,
+    TRY,
+    OR,
+    USE,
+
+    // --- other ---
     EOF,
 };

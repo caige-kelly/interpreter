@@ -1,0 +1,103 @@
+// -------------------------------------------------------------
+// Fscript system automation demo (v1 canonical)
+// Pure and monadic separation, try-based error handling, no ifs.
+// -------------------------------------------------------------
+
+// Read and validate deployment configuration ------------------
+
+config =
+  @Args.option("config")
+  |> try @File.read
+  |> try #Parse.json
+  |> try #Args.validateMap {
+      env: string,
+      url: string,
+      service: string,
+      restart: bool
+    }
+
+env      = config.env
+url      = config.url
+service  = config.service
+restart  = config.restart  // boolean flag
+
+// -------------------------------------------------------------
+// Utility functions
+// -------------------------------------------------------------
+
+formatTime = -> #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
+
+// Pure because all monads are wrapped with try
+log = msg ->
+  #String.concat [formatTime(), "  ", msg, "\n"]
+  |> try @File.append "./deploy.log"
+
+// Monadic — performs visible I/O
+@notify = msg ->
+  @IO.stdout ("[NOTIFY] " + msg)
+
+// Monadic — contains an unwrapped monad
+@deploy = target ->
+  log ("Deploying " + target)
+  |> @Process.start target
+  |> match _ ->
+      .ok  -> log ("Deployment succeeded for " + target),
+      .err -> @notify ("Deployment failed for " + target)
+              |> log "Deployment error recorded"
+
+// -------------------------------------------------------------
+// Status reporting
+// -------------------------------------------------------------
+
+buildPayload = status ->
+  #String.concat [
+    "{ \"env\": \"", env, "\", ",
+    "\"service\": \"", service, "\", ",
+    "\"status\": \"", status, "\" }"
+  ]
+
+// Pure because the monad is try-wrapped
+reportStatus = status ->
+  buildPayload status
+  |> try @Net.post url
+
+// -------------------------------------------------------------
+// Main program logic
+// -------------------------------------------------------------
+
+status =
+  try @Net.get (url + "/health")
+  |> match _ ->
+      .ok  -> "healthy",
+      .err -> "unreachable"
+
+// data-driven branching using match
+match status ->
+  "healthy" ->
+    log "Service healthy"
+    |> reportStatus "healthy",
+  "unreachable" ->
+    @notify "Service unreachable"
+    |> log "Attempting restart..."
+    |> match _ ->
+        .ok ->
+          match restart ->
+            true  -> try @Process.restart service
+                     |> reportStatus "restarted"
+                     |> log "Restarted successfully",
+            false -> log "Restart disabled",
+        .err -> @notify "Could not log status"
+
+// -------------------------------------------------------------
+// Optional: Action map version of the same restart logic
+// -------------------------------------------------------------
+
+restart_actions = {
+  true:  _ -> try @Process.restart service
+              |> reportStatus "restarted"
+              |> log "Restarted successfully",
+  false: _ -> log "Restart disabled"
+}
+
+// execute selected restart handler
+restart_actions[restart] _

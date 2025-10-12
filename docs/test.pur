@@ -1,0 +1,21 @@
+// Check server availability
+
+servers = ["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+
+results = try @IO.stderr hello or @IO.stderr good or @IO.stderr bye
+
+checks = map servers ->
+  match try @Sys.ping _ ->
+    .ok ms  -> {_, online, ms}
+    .err _  -> {_, offline, 0}
+
+offline = filter checks ->
+  match _ ->
+    {_, offline, _} -> true
+    _ -> false
+
+ts = #time.now
+lines = map checks -> match _ -> {host, state, ms} -> host + " " + state + " " + #to_string ms
+log = "Ping report @ " + ts + "\n\n" + lines + "\n"
+
+@IO.write "./logs/ping.log", log

@@ -2,27 +2,32 @@ const std = @import("std");
 const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
-const Literal = @import("token.zig").Literals;
+const Literal = @import("ast.zig").Literal;
 const KeywordMap = @import("token.zig").KeywordMap;
 
-const array_buf = 4096; // 4 Kib just cause
+const initial_token_capacity = 4096;
 
 pub const Scanner = struct {
     source: []const u8,
     tokens: std.ArrayList(Token),
     allocator: std.mem.Allocator,
+
     start: usize = 0,
     current: usize = 0,
     line: usize = 1,
     column: usize = 0,
     start_column: usize = 0,
 
-    pub fn init(source: []const u8, allocator: std.mem.Allocator) !Scanner {
-        return Scanner{ .source = source, .allocator = allocator, .tokens = try std.ArrayList(Token).initCapacity(allocator, array_buf) };
+    pub fn init(source: []const u8, alloc: std.mem.Allocator) !Scanner {
+        return .{
+            .source = source,
+            .allocator = alloc,
+            .tokens = try std.ArrayList(Token).initCapacity(alloc, initial_token_capacity),
+        };
     }
 
     pub fn deinit(self: *Scanner) void {
-        self.tokens.deinit(self.allocator);
+        self.tokens.deinit(self.allocator); // no per-string frees if you arena-allocation everything
     }
 
     pub fn scanTokens(self: *Scanner) ![]Token {
@@ -47,13 +52,25 @@ pub const Scanner = struct {
             ')' => return self.makeToken(.RIGHT_PAREN, .none),
             '{' => return self.makeToken(.LEFT_BRACE, .none),
             '}' => return self.makeToken(.RIGHT_BRACE, .none),
+            '[' => return self.makeToken(.LEFT_BRACKET, .none),
+            ']' => return self.makeToken(.RIGHT_BRACKET, .none),
             ',' => return self.makeToken(.COMMA, .none),
             '.' => return self.makeToken(.DOT, .none),
-            '-' => return self.makeToken(.MINUS, .none),
+            ':' => return self.makeToken(.COLON, .none),
             '+' => return self.makeToken(.PLUS, .none),
-            ';' => return self.makeToken(.SEMICOLON, .none),
+            '-' => {
+                if (self.match('>')) return self.makeToken(.ARROW, .none);
+                return self.makeToken(.MINUS, .none);
+            },
             '*' => return self.makeToken(.STAR, .none),
-            '"' => return self.makeToken(try self.stringLiteral(), .{ .string = self.source[self.start + 1 .. self.current - 1] }),
+            '@' => return self.makeToken(.AT, .none),
+            '#' => return self.makeToken(.HASH, .none),
+            '^' => return self.makeToken(.CARET, .none),
+            '|' => return if (self.match('>')) self.makeToken(.PIPE, .none) else self.undefinedLexeme(),
+            '"' => {
+                const processed = self.stringLiteral();
+                return self.makeToken(.STRING, .{ .string = try processed });
+            },
             '/' => return if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
             '!' => return if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
             '=' => return if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
@@ -66,7 +83,7 @@ pub const Scanner = struct {
             else => if (isNumber(c)) {
                 return self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
             } else if (isAlpha(c)) {
-                return self.makeToken(self.identifier(), .{ .string = self.source[self.start..self.current] });
+                return self.makeToken(self.identifier(), .none);
             } else return self.undefinedLexeme(),
         }
     }
@@ -74,7 +91,6 @@ pub const Scanner = struct {
     fn newLine(self: *Scanner) void {
         self.column = 0;
         self.line += 1;
-        return;
     }
 
     fn undefinedLexeme(self: *Scanner) !void {
@@ -86,7 +102,6 @@ pub const Scanner = struct {
         while (!self.isAtEnd() and self.peek() != '\n') {
             _ = self.advance();
         }
-        return;
     }
 
     fn identifier(self: *Scanner) TokenType {
@@ -117,20 +132,49 @@ pub const Scanner = struct {
         return .NUMBER;
     }
 
-    fn stringLiteral(self: *Scanner) !TokenType {
-        while (!self.isAtEnd() and self.peek() != '"') {
-            if (self.peek() == '\n') self.line += 1;
-            _ = self.advance();
+    fn stringLiteral(self: *Scanner) ![]u8 {
+        // temp builder on stack
+
+        var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+        var prev: u8 = 0;
+
+        while (!self.isAtEnd()) {
+            const ch = self.advance();
+
+            // stop only on an *unescaped* quote
+            if (ch == '"' and prev != '\\') break;
+
+            if (ch == '\\') {
+                const next = self.advance();
+                const escaped = switch (next) {
+                    'n' => '\n',
+                    't' => '\t',
+                    'r' => '\r',
+                    '\\' => '\\',
+                    '"' => '"',
+                    else => next, // unknown escapes pass through
+                };
+                try buffer.append(self.allocator, escaped);
+                prev = next;
+            } else {
+                try buffer.append(self.allocator, ch);
+                prev = ch;
+            }
+
+            if (ch == '\n') self.line += 1;
         }
 
         if (self.isAtEnd()) {
-            errors.report(self.line, "", "Unterminatd string.");
+            errors.report(self.line, "", "Unterminated string.");
             return error.UnterminatedString;
         }
 
-        _ = self.advance();
+        // consume the closing quote we broke on
+        // (if you prefer: remove, because we've already consumed it in the loop)
+        // _ = self.advance();
 
-        return .STRING;
+        // allocate a *permanent* copy owned by the scanner
+        return buffer.toOwnedSlice(self.allocator);
     }
 
     fn advance(self: *Scanner) u8 {
