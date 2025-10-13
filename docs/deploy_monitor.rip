@@ -5,6 +5,13 @@
 
 // Read and validate deployment configuration ------------------
 
+// Script automatically prints execution to screen. verbose = all output from Result, terse = only errors, silent = no output
+// Example:
+//    15 :: config :: #Args.validateMap :: ok :: 4 keys validated <-- without format 
+//    {"line": 15, "assigment": "config", "lastRunFunction": "#Args.validateMap", "status": "ok", "msg": "4 keys validated"} <-- with json format
+set #verbose
+set #format json
+
 config =
   @Args.option("config")
   |> try @File.read
@@ -25,57 +32,57 @@ restart  = config.restart  // boolean flag
 // Utility functions
 // -------------------------------------------------------------
 
-formatTime = #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
+formatTime = _ -> #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
 
-// Pure because all monads are wrapped with try
+// Pure because all monads are unwrapped with try
 log = msg ->
-  #String.concat [formatTime(), "  ", msg, "\n"]
-  |> try @File.append "./deploy.log"
+  #String.concat raw [formatTime, "  ", msg, "\n"]
+  |> try @File.append "./deploy.log" _ 
 
-// Monadic — performs visible I/O
+// Monadic assigment — performs visible I/O and does not handle variance -- would halt program on error
+// Result object is return instead of being unwrapped
 @notify = msg ->
-  @IO.stdout ("[NOTIFY] " + msg)
+  @IO.stdout #String.concat pretty ["[NOTIFY]", msg]
 
-// Monadic — contains an unwrapped monad
-@deploy = target ->
-  log ("Deploying " + target)
-  |> @Process.start target
-  |> match _ ->
-      .ok  -> log ("Deployment succeeded for " + target),
-      .err -> @notify ("Deployment failed for " + target)
-              |> log "Deployment error recorded"
+// Pure assignment - Result object is explicitly handled
+deploy = target -> match @Process.start target -> 
+  .ok(v)  -> log ("Deployment succeeded for " + v),
+  .err(e) -> @notify ("Deployment failed for " + e) |> log "Deployment error recorded" // <- example of unused pipe values, simple chained functions
 
 // -------------------------------------------------------------
 // Status reporting
 // -------------------------------------------------------------
 
 buildPayload = status ->
-  #String.concat [
+  #String.concat raw [
     "{ \"env\": \"", env, "\", ",
     "\"service\": \"", service, "\", ",
     "\"status\": \"", status, "\" }"
   ]
 
-// Pure because the monad is try-wrapped
+// Pure because the monad is try-wrapped 
+// returns Result.ok.system.value or Result.err.system.value vs match construct default Result.ok.system.value or Result.err.user.value i.e error msg
 reportStatus = status ->
   buildPayload status
-  |> try @Net.post url
+  |> try @Net.post url _  //implicit pipeline variable assignment 
+                          //i.e make the second argument what was passed through pipeline
 
 // -------------------------------------------------------------
 // Main program logic
 // -------------------------------------------------------------
 
-status =
-  try @Net.get (url + "/health")
+//result is rewrapped making status monadic again
+@status =
+  @Net.get #String.concat raw [url + "/health"]
   |> match _ ->
-      .ok  -> "healthy",
-      .err -> "unreachable"
+      .ok  -> #Result.set value "healthy"
+      .err -> #Result.set value "unreachable"
 
 // data-driven branching using match
 match status ->
   "healthy" ->
     log "Service healthy"
-    |> reportStatus "healthy",
+    |> reportStatus "healthy"
   "unreachable" ->
     @notify "Service unreachable"
     |> log "Attempting restart..."
