@@ -68,6 +68,7 @@ pub const TokenType = enum {
     PIPE,
     ESCAPE,
     NEWLINE,
+    UNDERSCORE,
 
     // --- literals ---
     IDENTIFIER,

@@ -1,8 +1,8 @@
 const std = @import("std");
-const Scanner = @import("./scanner.zig").Scanner;
+const Lexer = @import("./lexer.zig").Lexer;
 const Parser = @import("./parser.zig").Parser;
 const Ast = @import("./ast.zig");
-const evaluator = @import("./evaluator.zig");
+const eval = @import("./parser.zig");
 
 const max_size = 2 * 1024 * 1024 * 1024; // 2 GiB
 
@@ -79,9 +79,9 @@ fn run(source: []const u8) !void {
     var scan_arena = std.heap.ArenaAllocator.init(gpa.allocator());
     defer scan_arena.deinit();
 
-    var scanner = try Scanner.init(source, scan_arena.allocator());
+    var lex = try Lexer.init(source, scan_arena.allocator());
 
-    const tokens = try scanner.scanTokens();
+    const tokens = try lex.scanTokens();
 
     // ---------- Phase 2: Parse ---------
     var parse_arena = std.heap.ArenaAllocator.init(gpa.allocator());
@@ -91,11 +91,11 @@ fn run(source: []const u8) !void {
     const exprs = try parser.parse();
 
     // --------- Phase 3: Convert ---------
-    var evaluate_arena = std.heap.ArenaAllocator.init(gpa.allocator());
-    defer evaluate_arena.deinit();
+    var eval_arena = std.heap.ArenaAllocator.init(gpa.allocator());
+    defer eval_arena.deinit();
 
     for (exprs) |*expr| {
-        const e = try evaluator.converter(expr, evaluate_arena.allocator());
+        const e = try eval.converter(expr, eval_arena.allocator());
         Ast.debugPrint(e.*, 0);
     }
 }

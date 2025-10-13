@@ -7,7 +7,7 @@ const KeywordMap = @import("token.zig").KeywordMap;
 
 const initial_token_capacity = 4096;
 
-pub const Scanner = struct {
+pub const Lexer = struct {
     source: []const u8,
     tokens: std.ArrayList(Token),
     allocator: std.mem.Allocator,
@@ -18,7 +18,7 @@ pub const Scanner = struct {
     column: usize = 0,
     start_column: usize = 0,
 
-    pub fn init(source: []const u8, alloc: std.mem.Allocator) !Scanner {
+    pub fn init(source: []const u8, alloc: std.mem.Allocator) !Lexer {
         return .{
             .source = source,
             .allocator = alloc,
@@ -26,7 +26,7 @@ pub const Scanner = struct {
         };
     }
 
-    pub fn scanTokens(self: *Scanner) ![]Token {
+    pub fn scanTokens(self: *Lexer) ![]Token {
         while (!self.isAtEnd()) {
             self.start = self.current;
             self.start_column = self.column;
@@ -40,7 +40,7 @@ pub const Scanner = struct {
         return self.tokens.items;
     }
 
-    pub fn scanToken(self: *Scanner) !void {
+    pub fn scanToken(self: *Lexer) !void {
         const c = self.advance();
 
         switch (c) {
@@ -67,6 +67,7 @@ pub const Scanner = struct {
                 const processed = self.stringLiteral();
                 return self.makeToken(.STRING, .{ .string = try processed });
             },
+            '_' => return self.makeToken(.UNDERSCORE, .none),
             '/' => return if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
             '!' => return if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
             '=' => return if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
@@ -84,25 +85,25 @@ pub const Scanner = struct {
         }
     }
 
-    fn newLine(self: *Scanner) !void {
+    fn newLine(self: *Lexer) !void {
         self.column = 0;
         self.line += 1;
         try self.makeToken(.NEWLINE, .none);
         return;
     }
 
-    fn undefinedLexeme(self: *Scanner) !void {
+    fn undefinedLexeme(self: *Lexer) !void {
         errors.report(self.line, "", "Unexpected character.");
         return error.UnexpectedCharacter;
     }
 
-    fn commentLexeme(self: *Scanner) void {
+    fn commentLexeme(self: *Lexer) void {
         while (!self.isAtEnd() and self.peek() != '\n') {
             _ = self.advance();
         }
     }
 
-    fn identifier(self: *Scanner) TokenType {
+    fn identifier(self: *Lexer) TokenType {
         while (isAlpha(self.peek()) or isNumber(self.peek())) {
             _ = self.advance();
         }
@@ -119,7 +120,7 @@ pub const Scanner = struct {
         return std.ascii.isDigit(token);
     }
 
-    fn numberLiteral(self: *Scanner) TokenType {
+    fn numberLiteral(self: *Lexer) TokenType {
         while (isNumber(self.peek())) _ = self.advance();
 
         if (self.peek() == '.' and isNumber(self.peekNext())) {
@@ -130,7 +131,7 @@ pub const Scanner = struct {
         return .NUMBER;
     }
 
-    fn stringLiteral(self: *Scanner) ![]u8 {
+    fn stringLiteral(self: *Lexer) ![]u8 {
         // temp builder on stack
 
         var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
@@ -175,28 +176,28 @@ pub const Scanner = struct {
         return buffer.toOwnedSlice(self.allocator);
     }
 
-    fn advance(self: *Scanner) u8 {
+    fn advance(self: *Lexer) u8 {
         const ch = self.source[self.current];
         self.current += 1;
         self.column += 1;
         return ch;
     }
 
-    fn peek(self: *Scanner) u8 {
+    fn peek(self: *Lexer) u8 {
         if (self.isAtEnd()) return 0;
         return self.source[self.current];
     }
 
-    fn peekNext(self: *Scanner) u8 {
+    fn peekNext(self: *Lexer) u8 {
         if (self.current + 1 >= self.source.len) return 0;
         return self.source[self.current + 1];
     }
 
-    fn isAtEnd(self: *Scanner) bool {
+    fn isAtEnd(self: *Lexer) bool {
         return self.current >= self.source.len;
     }
 
-    fn match(self: *Scanner, expected: u8) bool {
+    fn match(self: *Lexer, expected: u8) bool {
         if (self.isAtEnd()) return false;
         if (self.source[self.current] != expected) return false;
 
@@ -205,7 +206,7 @@ pub const Scanner = struct {
         return true;
     }
 
-    fn makeToken(self: *Scanner, t: TokenType, literal: Literal) !void {
+    fn makeToken(self: *Lexer, t: TokenType, literal: Literal) !void {
         var lit = literal;
         switch (t) {
             .TRUE => lit = .{ .boolean = true },

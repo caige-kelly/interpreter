@@ -1,5 +1,9 @@
 const std = @import("std");
 
+// -------------------------------
+// Expression node definitions
+// -------------------------------
+
 const TokenType = @import("token.zig").TokenType;
 
 pub const Literal = union(enum) {
@@ -158,6 +162,16 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             std.debug.print("Assign:\n", .{});
             indent(depth + 1);
             std.debug.print("name: {s}\n", .{a.name});
+            indent(depth + 1);
+            std.debug.print("value:\n", .{});
+            debugPrint(a.value.*, depth + 2);
+        },
+
+        .match_expr => |a| {
+            indent(depth);
+            std.debug.print("Map:\n", .{});
+            indent(depth + 1);
+            std.debug.print("name: {any}\n", .{a.branches});
             indent(depth + 1);
             std.debug.print("value:\n", .{});
             debugPrint(a.value.*, depth + 2);
