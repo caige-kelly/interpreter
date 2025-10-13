@@ -1,7 +1,5 @@
 
-something = @Args.option config
-|> @Args.Start
-|> @Args.Start
+something = @Args.option config|> @Args.Start|> @Args.Start
 
 all = @Args.option config|> @Args.Start|> @Args.Start
 
