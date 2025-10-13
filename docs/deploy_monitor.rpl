@@ -47,7 +47,7 @@ log = msg ->
   @IO.stdout "[NOTIFY]" + msg
 
 deploy = target -> match @Process.start target -> 
-  .ok(v)  -> log ("Deployment succeeded for " + v),
+  .ok(v)  -> log "Deployment succeeded for " + v
   .err(e.system) -> @notify "Deployment failed for " + e.system |> log _
 
 // -------------------------------------------------------------
