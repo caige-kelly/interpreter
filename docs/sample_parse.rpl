@@ -1,11 +1,14 @@
 
-something = @Args.option config|> @Args.Start|> @Args.Start
+match something ->
+  ok -> something
+  err -> something
 
-all = @Args.option config|> @Args.Start|> @Args.Start
+try @IO.stdout
 
-vars = this
+match something -> ok -> something, err -> something
 
-//[parser] >>> start expression (token=AT)
+//result = @Args.option config |> @Args.Start |> @Args.Start
+//@Args.option config |> @File.Read |> @Parse json |> @Service.Start "steam"
 //[parser] call arg detected (token=IDENTIFIER)
 //[parser] call built (token=PIPE)
 //[parser] built PIPE node (next=PIPE)
