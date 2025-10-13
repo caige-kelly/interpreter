@@ -25,7 +25,7 @@ restart  = config.restart  // boolean flag
 // Utility functions
 // -------------------------------------------------------------
 
-formatTime = -> #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
+formatTime = #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
 
 // Pure because all monads are wrapped with try
 log = msg ->
