@@ -157,6 +157,19 @@ pub const Parser = struct {
                 _ = self.advance();
             }
             if (self.check(.EOF)) break;
+            const t = self.peek().type;
+            const is_valid_start =
+                t == .IDENTIFIER or
+                t == .DOT or
+                t == .UNDERSCORE;
+
+            const is_stop =
+                t == .ARROW or // saw '->' without a pattern; don't consume it
+                t == .RIGHT_PAREN or // defensive if a prior parse left us here
+                t == .RIGHT_BRACE or // if you ever add block forms
+                t == .EOF;
+
+            if (!is_valid_start or is_stop) break;
 
             // --- parse the pattern (ok, err, etc.)
             const pattern_tok = self.advance();

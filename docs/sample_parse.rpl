@@ -3,8 +3,6 @@ match something ->
   ok -> something
   err -> something
 
-try @IO.stdout
-
 match something -> ok -> something, err -> something
 
 //result = @Args.option config |> @Args.Start |> @Args.Start
