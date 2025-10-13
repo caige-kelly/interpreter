@@ -1,5 +1,5 @@
 // -------------------------------------------------------------
-// Fscript system automation demo (v1 canonical)
+// Ripl system automation demo (v1 canonical)
 // Pure and monadic separation, try-based error handling, no ifs.
 // -------------------------------------------------------------
 
