@@ -63,7 +63,11 @@ pub const Parser = struct {
         const expr = try self.parsePipe();
 
         if (self.match(.EQUAL)) {
-            const value = try self.parseAssignment();
+            if (self.peek().type == .NEWLINE){
+                _ = self.advance();
+            }
+            
+            const value = try self.parsePipe();
             switch (expr) {
                 .identifier => |name| {
                     const value_ptr = try self.allocator.create(Ast.Expr);
@@ -231,8 +235,18 @@ pub const Parser = struct {
                 return Ast.Expr{ .identifier = full };
             },
 
+            .HASH => {
+                const ns = self.consume(.IDENTIFIER, "expected identifier after '#'");
+                _ = self.consume(.DOT, "expected '.' after instrinsic namespace");
+                const func = self.consume(.IDENTIFIER, "expected function name after '.'");
+
+                const full = try std.fmt.allocPrint(self.allocator, "#{s}.{s}", .{ ns.lexeme, func.lexeme });
+                return Ast.Expr{ .identifier = full };
+            },
+
             else => {
                 errors.report(token.line, "parse", "Unexpected token in primary expression");
+                std.debug.print("token: {any}\n", .{token});
                 return error.UnexpectedToken;
             },
         };

@@ -9,11 +9,12 @@
 // Example:
 //    15 :: config :: #Args.validateMap :: ok :: 4 keys validated <-- without format 
 //    {"line": 15, "assigment": "config", "lastRunFunction": "#Args.validateMap", "status": "ok", "msg": "4 keys validated"} <-- with json format
-set #verbose
-set #format json
 
-config =
-  @Args.option("config")
+#Program.verbosity verbose
+#Program.format json
+
+config = 
+  @Args.option
   |> try @File.read
   |> try #Parse.json
   |> try #Args.validateMap {

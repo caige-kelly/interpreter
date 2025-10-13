@@ -1,3 +1,4 @@
+#Program.verbosity verbose
 
 match something ->
   ok -> something
