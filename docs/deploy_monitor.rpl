@@ -5,7 +5,7 @@
 
 // Read and validate deployment configuration ------------------
 
-// Script automatically prints execution to screen. verbose = all output from Result, terse = only errors, silent = no output
+// Script automatically prints execution to screen. verbose = output all expressions, terse = only errors, silent = no output
 // Example:
 //    15 :: config :: #Args.validateMap :: ok :: 4 keys validated <-- without format 
 //    {"line": 15, "assigment": "config", "lastRunFunction": "#Args.validateMap", "status": "ok", "msg": "4 keys validated"} <-- with json format
@@ -61,11 +61,9 @@ buildPayload = status ->
   ]
 
 // Pure because the monad is try-wrapped 
-// returns Result.ok.system.value or Result.err.system.value vs match construct default Result.ok.system.value or Result.err.user.value i.e error msg
 reportStatus = status ->
   buildPayload status
-  |> try @Net.post url _  //implicit pipeline variable assignment 
-                          //i.e make the second argument what was passed through pipeline
+  |> try @Net.post url _
 
 // -------------------------------------------------------------
 // Main program logic
@@ -107,4 +105,4 @@ restart_actions = {
 }
 
 // execute selected restart handler
-restart_actions[restart] _
+restart_actions[restart] 
