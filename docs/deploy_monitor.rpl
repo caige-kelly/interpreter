@@ -1,6 +1,8 @@
 // -------------------------------------------------------------
 // Ripple system automation demo (v1 canonical)
 // Pure and monadic separation, try-based error handling, no ifs.
+// 
+// ./program.rpl --config "./path/to/file.json"
 // -------------------------------------------------------------
 
 // Read and validate deployment configuration ------------------
@@ -11,23 +13,25 @@
 //    {"line": 15, "assigment": "config", "lastRunFunction": "#Args.validateMap", "status": "ok", "msg": "4 keys validated"} <-- with json format
 
 #Program.verbosity verbose
-#Program.format json
+#Program.output json
+#Program.Retry{enable: true, count: 5, sleep: 5s, type: full} // full start from beginning, incremental start back at failing expression
+#Program.timeout 5m
 
 config = 
-  @Args.option
+  @Args.option config
   |> try @File.read
   |> try #Parse.json
-  |> try #Args.validateMap {
+  |> try #Program.Args.validateMap {
       env: string,
       url: string,
       service: string,
       restart: bool
     }
 
-env      = config.env
-url      = config.url
-service  = config.service
-restart  = config.restart  // boolean flag
+env      = config.env      // string: dev
+url      = config.url      // string: https://localhost:9000
+service  = config.service  // string: nginx
+restart  = config.restart  // bool: true 
 
 // -------------------------------------------------------------
 // Utility functions
@@ -35,26 +39,22 @@ restart  = config.restart  // boolean flag
 
 formatTime = _ -> #Time.now |> #Time.format "%Y-%m-%d %H:%M:%S"
 
-// Pure because all monads are unwrapped with try
 log = msg ->
   #String.concat raw [formatTime, "  ", msg, "\n"]
   |> try @File.append "./deploy.log" _ 
 
-// Monadic assigment — performs visible I/O and does not handle variance -- would halt program on error
-// Result object is return instead of being unwrapped
 @notify = msg ->
-  @IO.stdout #String.concat pretty ["[NOTIFY]", msg]
+  @IO.stdout "[NOTIFY]" + msg
 
-// Pure assignment - Result object is explicitly handled
 deploy = target -> match @Process.start target -> 
   .ok(v)  -> log ("Deployment succeeded for " + v),
-  .err(e) -> @notify ("Deployment failed for " + e) |> log "Deployment error recorded" // <- example of unused pipe values, simple chained functions
+  .err(e.system) -> @notify "Deployment failed for " + e.system |> log _
 
 // -------------------------------------------------------------
 // Status reporting
 // -------------------------------------------------------------
 
-buildPayload = status ->
+buildPayload = status -> // could be {env: "env",...} |> #Map.stringify 
   #String.concat raw [
     "{ \"env\": \"", env, "\", ",
     "\"service\": \"", service, "\", ",
@@ -63,36 +63,26 @@ buildPayload = status ->
 
 // Pure because the monad is try-wrapped 
 reportStatus = status ->
-  buildPayload status
+  buildPayload _
   |> try @Net.post url _
 
 // -------------------------------------------------------------
 // Main program logic
 // -------------------------------------------------------------
 
-//result is rewrapped making status monadic again
 @status =
-  @Net.get #String.concat raw [url + "/health"]
-  |> match _ ->
-      .ok  -> #Result.set value "healthy"
-      .err -> #Result.set value "unreachable"
+  match @Net.get url + "/health" ->
+    .ok  -> #Result.set value "healthy"
+    .err -> #Result.set value "unreachable"
 
-// data-driven branching using match
-match status ->
-  "healthy" ->
-    log "Service healthy"
-    |> reportStatus "healthy"
+match @status ->
+  "healthy" -> log "Service" + _ |> reportStatus _
   "unreachable" ->
-    @notify "Service unreachable"
+    @notify "Service" + _
     |> log "Attempting restart..."
-    |> match _ ->
-        .ok ->
-          match restart ->
-            true  -> try @Process.restart service
-                     |> reportStatus "restarted"
-                     |> log "Restarted successfully",
-            false -> log "Restart disabled",
-        .err -> @notify "Could not log status"
+    |> match @Process.restart service ->
+        .ok(v) -> reportStatus "restarted" |> log v
+        .err(e)-> @notify "Could not restat service" |> log e
 
 // -------------------------------------------------------------
 // Optional: Action map version of the same restart logic
