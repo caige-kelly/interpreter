@@ -1,7 +1,7 @@
 
 match something ->
-  ok -> something
-  err -> something
+  ok(v) -> something
+  err(msg) -> something
 
 match something -> ok -> something, err -> something
 
