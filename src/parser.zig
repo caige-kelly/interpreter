@@ -224,6 +224,7 @@ pub const Parser = struct {
             .FALSE => Ast.Expr{ .literal = .{ .boolean = false } },
             .NONE => Ast.Expr{ .literal = .{ .none = {} } },
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
+            .UNDERSCORE => Ast.Expr{ .identifier = token.lexeme},
 
             // Handle monadic identifiers: @Namespace.func
             .AT => {
@@ -310,7 +311,7 @@ pub const Parser = struct {
         }
 
         return switch (next.type) {
-            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET => true,
+            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET, .UNDERSCORE, .PLUS => true,
             else => false,
         };
     }

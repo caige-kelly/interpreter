@@ -8,4 +8,6 @@ this
 that
 "high" 
 
-["this", "that", variable ]
+@somethig.this ["this", "that", variable ] |> this
+
+a = [ "some", "list"]
