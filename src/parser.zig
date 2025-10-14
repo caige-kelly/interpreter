@@ -63,10 +63,10 @@ pub const Parser = struct {
         const expr = try self.parsePipe();
 
         if (self.match(.EQUAL)) {
-            if (self.peek().type == .NEWLINE){
+            if (self.peek().type == .NEWLINE) {
                 _ = self.advance();
             }
-            
+
             const value = try self.parsePipe();
             switch (expr) {
                 .identifier => |name| {
@@ -224,7 +224,7 @@ pub const Parser = struct {
             .FALSE => Ast.Expr{ .literal = .{ .boolean = false } },
             .NONE => Ast.Expr{ .literal = .{ .none = {} } },
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
-            .UNDERSCORE => Ast.Expr{ .identifier = token.lexeme},
+            .UNDERSCORE => Ast.Expr{ .identifier = token.lexeme },
 
             // Handle monadic identifiers: @Namespace.func
             .AT => {
@@ -244,30 +244,65 @@ pub const Parser = struct {
                 const full = try std.fmt.allocPrint(self.allocator, "#{s}.{s}", .{ ns.lexeme, func.lexeme });
                 return Ast.Expr{ .identifier = full };
             },
-            
-            .LEFT_BRACKET => {
-                var array = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 1024);          
 
-                while (!self.isAtEnd()) {
-                    if (self.peek().type == .NEWLINE) {
-                        _ = self.advance();
+            .LEFT_BRACKET => {
+                // [ <expr> ( , <expr> )* ,? ]
+                var items_list = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 0);
+
+                // Optional: eat any newlines right after '['
+                while (self.check(.NEWLINE)) _ = self.advance();
+
+                // Empty list: "[]"
+                if (self.check(.RIGHT_BRACKET)) {
+                    _ = self.advance(); // consume ']'
+                    const items = try items_list.toOwnedSlice(self.allocator);
+                    return Ast.Expr{ .literal = .{ .list = items } };
+                }
+
+                // Parse first and subsequent elements
+                while (true) {
+                    // Allow leading newlines before an element
+                    while (self.check(.NEWLINE)) _ = self.advance();
+
+                    const elem = try self.parseExpression();
+                    try items_list.append(self.allocator, elem);
+
+                    // Skip trailing newlines after the element
+                    while (self.check(.NEWLINE)) _ = self.advance();
+
+                    if (self.isAtEnd()) {
+                        items_list.deinit(self.allocator);
+                        errors.report(token.line, "parse", "Unterminated list literal (missing ']')");
+                        return error.ExpectedToken;
                     }
 
-                    if (self.peek().type == .COMMA) {
-                        _ = self.advance();
+                    // Trailing comma is allowed: [a, b,]
+                    if (self.match(.COMMA)) {
+                        // Consume any number of newlines after the comma
+                        while (self.check(.NEWLINE)) _ = self.advance();
+
+                        // If the next token is ']', that's a trailing comma — finish
+                        if (self.check(.RIGHT_BRACKET)) {
+                            _ = self.advance();
+                            break;
                         }
 
-                    const e = try self.parseExpression();
-                    try array.append(self.allocator, e);
+                        if (self.isAtEnd()) {
+                            items_list.deinit(self.allocator);
+                            errors.report(token.line, "parse", "Unterminated list literal (missing ']')");
+                            return error.ExpectedToken;
+                        }
 
-                    if (self.peek().type == .RIGHT_BRACKET) {
-                        _ = self.advance();
+                        // Otherwise, loop to parse the next element
+                        continue;
+                    }
+
+                    // No comma: expect closing bracket
+                    _ = try self.expect(.RIGHT_BRACKET);
                     break;
                 }
-            }
 
-                const items = try array.toOwnedSlice(self.allocator);
-
+                const items = try items_list.toOwnedSlice(self.allocator);
                 return Ast.Expr{ .literal = .{ .list = items } };
             },
 

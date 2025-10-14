@@ -132,18 +132,22 @@ pub const Lexer = struct {
     }
 
     fn stringLiteral(self: *Lexer) ![]u8 {
-        // temp builder on stack
-
         var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+
         var prev: u8 = 0;
 
         while (!self.isAtEnd()) {
             const ch = self.advance();
 
-            // stop only on an *unescaped* quote
-            if (ch == '"' and prev != '\\') break;
+            // stop only on an unescaped quote
+            if (ch == '"' and prev != '\\') {
+                // found a closing quote, string is complete
+                const out = try buffer.toOwnedSlice(self.allocator);
+                return out;
+            }
 
             if (ch == '\\') {
+                if (self.isAtEnd()) break; // broken escape at EOF
                 const next = self.advance();
                 const escaped = switch (next) {
                     'n' => '\n',
@@ -163,17 +167,10 @@ pub const Lexer = struct {
             if (ch == '\n') self.line += 1;
         }
 
-        if (self.isAtEnd()) {
-            errors.report(self.line, "", "Unterminated string.");
-            return error.UnterminatedString;
-        }
-
-        // consume the closing quote we broke on
-        // (if you prefer: remove, because we've already consumed it in the loop)
-        // _ = self.advance();
-
-        // allocate a *permanent* copy owned by the scanner
-        return buffer.toOwnedSlice(self.allocator);
+        // If we reach here, EOF was hit before a closing quote
+        errors.report(self.line, "", "Unterminated string literal (missing closing quote).");
+        _ = buffer.deinit(self.allocator);
+        return error.UnterminatedString;
     }
 
     fn advance(self: *Lexer) u8 {

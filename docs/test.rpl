@@ -6,8 +6,26 @@ this
 "this"
 2
 that
-"high" 
+"high"
 
 @somethig.this ["this", "that", variable ] |> this
 
-a = [ "some", "list"]
+a = ["some", "list", "that", "them"]
+
+[[1, 2], [3, 4]]
+
+[
+  1,
+  2
+]
+
+[
+  1,
+  2
+
+
+]
+
+[1, 2]
+  |> #List.map @Net.get
+  |> #List.flatten

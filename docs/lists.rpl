@@ -1,0 +1,16 @@
+// Simple transform
+nums = [1, 2, 3]
+doubled = nums |> #List.map (x -> x * 2)
+#IO.stdout doubled
+
+// Filtered
+even = nums |> #List.filter (x -> x % 2 == 0)
+#IO.stdout even
+
+// Sequence monadic actions
+results =
+  @List.sequence [
+    @Net.get "https://a",
+    @Net.get "https://b"
+  ]
+  |> intercept e -> @Slack.post "Batch failed: " + e
