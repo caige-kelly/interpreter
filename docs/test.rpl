@@ -1,0 +1,13 @@
+2
+x = 2
+
+this
+
+"this"
+2
+that
+"high" 
+
+@somethig.this ["this", "that", variable ] |> this
+
+a = [ "some", "list"]

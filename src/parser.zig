@@ -224,6 +224,7 @@ pub const Parser = struct {
             .FALSE => Ast.Expr{ .literal = .{ .boolean = false } },
             .NONE => Ast.Expr{ .literal = .{ .none = {} } },
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
+            .UNDERSCORE => Ast.Expr{ .identifier = token.lexeme},
 
             // Handle monadic identifiers: @Namespace.func
             .AT => {
@@ -242,6 +243,32 @@ pub const Parser = struct {
 
                 const full = try std.fmt.allocPrint(self.allocator, "#{s}.{s}", .{ ns.lexeme, func.lexeme });
                 return Ast.Expr{ .identifier = full };
+            },
+            
+            .LEFT_BRACKET => {
+                var array = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 1024);          
+
+                while (!self.isAtEnd()) {
+                    if (self.peek().type == .NEWLINE) {
+                        _ = self.advance();
+                    }
+
+                    if (self.peek().type == .COMMA) {
+                        _ = self.advance();
+                        }
+
+                    const e = try self.parseExpression();
+                    try array.append(self.allocator, e);
+
+                    if (self.peek().type == .RIGHT_BRACKET) {
+                        _ = self.advance();
+                    break;
+                }
+            }
+
+                const items = try array.toOwnedSlice(self.allocator);
+
+                return Ast.Expr{ .literal = .{ .list = items } };
             },
 
             else => {
@@ -284,7 +311,7 @@ pub const Parser = struct {
         }
 
         return switch (next.type) {
-            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT => true,
+            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET, .UNDERSCORE, .PLUS => true,
             else => false,
         };
     }

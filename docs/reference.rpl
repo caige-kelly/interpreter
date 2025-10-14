@@ -1,0 +1,201 @@
+// -------------------------------------------------------------
+// Ripple Standard Reference (v5.0)
+// -------------------------------------------------------------
+//
+// Domains:
+//   # — Pure/tolerant (returns Value or none)
+//   @ — Monadic (returns Result.ok or Result.err)
+//
+// Result type (dual-channel):
+//   Result<T, E, S> = ok(T, S) | err(E, S)
+//     user: T or E  // semantic value (what your program cares about)
+//     sys:  S       // system metadata (what the runtime/supervisor tracks)
+//
+// Shorthands:
+//   ok(v)        ≡ ok(v, none)
+//   ok(_, s)     ≡ ok(none, s)
+//   err(v)       ≡ err(v, none)
+//   err(_, s)    ≡ err(none, s)
+//
+// Core operators:
+//   |>      — pipeline forward
+//   or      — associative fallback if left == none (identity: none)
+//   peek    — observe .err side effects, return the same Result unchanged
+//   then    — sequencing (discard left, run right)
+//   match   — destructure ok/err (only when you actually need branching)
+//   ^       — unwrap ok or propagate err upward (when unwrapping is needed)
+//   _       — placeholder for piped value inside an argument expression
+//
+// Algebra:
+//   Pure tolerant operations form a monoid:  identity = none, operator = or
+//   Monadic propagation:
+//     ok(u, s)  |> f = f(u, s)
+//     err(u, s) |> f = err(u, s)
+//   peek f:
+//     peek f (ok(u, s))  = ok(u, s)
+//     peek f (err(u, s)) = f(u, s) then err(u, s)
+//
+// -------------------------------------------------------------
+// Program supervision & tracing
+// -------------------------------------------------------------
+//
+// #Program.verbosity = quiet | normal | verbose
+//
+// When #Program.verbosity == verbose, the supervisor logs EVERY evaluated
+// expression as a trace event (no code changes needed):
+//
+//   line :: assignment :: function/operator :: user_value :: system_value
+//
+// - line:        source line number
+// - assignment:  the binding name being written (or _ if none)
+// - function/op: last intrinsic/operator executed
+// - user_value:  the user channel of value/result
+// - system_value:the sys channel (metadata: status, duration, ids, etc.)
+//
+// These logs are observational only and DO NOT affect execution semantics.
+// They exist to prevent “logging-only matches” and keep exception handling meaningful.
+//
+// Example trace lines (illustrative):
+//   15 :: file     :: #Map.validate    :: "validated 4 keys" :: {duration: 2ms}
+//   28 :: _        :: @Net.get         :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
+//   29 :: _        :: peek             :: ok(none)            :: {side_effect: "slack_posted"}
+//   30 :: deploy   :: or               :: {status: "skipped"} :: {source: "fallback"}
+//
+// -------------------------------------------------------------
+// 1. Basic values and pure operations
+// -------------------------------------------------------------
+
+y = 100
+
+x = 42
+
+this |> broken
+
+#String.concat [
+    "The answer is ", x 
+] |> #IO.stdout _
+
+cache = #Map.new { data: null, version: 1 }
+#Map.stringify cache
+  |> #IO.stdout _
+
+// -------------------------------------------------------------
+// 2. Pure tolerant pipelines (or-mon oid)
+// -------------------------------------------------------------
+
+file =
+  #File.read ./bad/path.json
+  |> #Map.parse
+  |> #Map.get config
+  or
+  #File.read ./good/path.json
+  |> #Map.parse
+  or #Map.new { default: "fallback" }
+
+#Map.stringify file
+  |> #IO.stdout "File used => " + _
+
+// -------------------------------------------------------------
+// 3. Monadic result with dual-channel + peek (transparent)
+// -------------------------------------------------------------
+
+status =
+  @Net.get https://example.com/health         // ok(body, {status, ms}) or err(msg, {code, ms})
+  |> peek e -> @Slack.post "Health check failed: " + e    // logs on err; Result unchanged
+
+status
+  |> match ->
+       ok body meta -> #IO.stdout "Service healthy (" + meta.status + ")"
+       err msg  meta -> #IO.stdout "Service unhealthy: " + msg
+
+// -------------------------------------------------------------
+// 4. Pure fallback example
+// -------------------------------------------------------------
+
+config =
+  #File.read ./config.json
+  |> #Map.parse
+  or #Map.new { env: dev, service: demo }
+
+match config.env ->
+  prod -> #IO.stdout "Production mode"
+  dev  -> #IO.stdout "Development mode"
+  _    -> #IO.stdout "Unknown environment"
+
+// -------------------------------------------------------------
+// 5. Monadic chain with graceful tolerant fallback at the end
+// -------------------------------------------------------------
+
+data =
+  @Net.get https://example.com/data
+  |> @Map.parse
+  |> peek e -> @IO.stdout "Fetch or parse failed: " + e
+  or #Map.new {}
+
+#Map.stringify data
+  |> #IO.stdout "Data => " + _
+
+// -------------------------------------------------------------
+// 6. User-defined monadic function (dual-channel in matches)
+// -------------------------------------------------------------
+
+@restart_service = name ->
+  match @Process.kill name ->
+    ok _ sys   -> @Process.start name
+    err msg sys ->
+      @IO.stdout "Restart failed for " + name + ": " + msg
+      then err("restart failed", sys)
+
+@restart_service nginx
+  |> peek e -> @Slack.post "Restart failed for nginx: " + e
+
+// -------------------------------------------------------------
+// 7. Pure function definition
+// -------------------------------------------------------------
+
+#Math.add = a b -> a + b
+sum = #Math.add 10 32
+sum
+  |> #IO.stdout "Sum => " + _
+
+// -------------------------------------------------------------
+// 8. Graceful monadic recovery with metadata
+// -------------------------------------------------------------
+
+data2 =
+  @File.read ./input.txt
+  |> @Map.parse
+  |> peek e -> @IO.stdout "Parse failed: " + e
+  or #Map.new { data: none }
+
+#Map.stringify data2
+  |> #IO.stdout "Recovered data => " + _
+
+// -------------------------------------------------------------
+// 9. None propagation in pure context
+// -------------------------------------------------------------
+
+result_none =
+  #File.read ./not_there
+  |> #Map.parse
+  |> #IO.stdout "This should not print: " + _
+
+#IO.stdout "Done (if reached, none propagation worked)"
+
+// -------------------------------------------------------------
+// 10. Full deployment pipeline demo (error propagation + peek + fallback)
+// -------------------------------------------------------------
+
+deploy =
+  @File.read ./deploy.json
+  |> @Map.parse
+  |> @Net.post https://deploy
+  |> peek e -> @Slack.post "Deploy failed: " + e
+  or #Map.new { status: skipped }
+
+#Map.stringify deploy
+  |> #IO.stdout "Deploy result => " + _
+
+// -------------------------------------------------------------
+// End of reference script
+// -------------------------------------------------------------

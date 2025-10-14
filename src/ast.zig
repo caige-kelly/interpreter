@@ -108,6 +108,26 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
                 indent(depth);
                 std.debug.print("None\n", .{});
             },
+            .list => |items| {
+                indent(depth);
+                std.debug.print("List:\n", .{});
+                for (items) |item| {
+                    indent(depth + 1);
+                    switch (item) {
+                        .literal => switch (item.literal)  {
+                            .boolean => std.debug.print("item: {}\n", .{item.literal.boolean}),
+                            .string => std.debug.print("item: {s}\n", .{item.literal.string}),
+                            .number => std.debug.print("item: {d}\n", .{item.literal.number}),
+                            .none => std.debug.print("item: {}\n", .{item.literal.none}),
+                            else => {},
+                        },
+                        .identifier => switch(item) {
+                            else => std.debug.print("item: {s}\n", .{item.identifier})
+                        },
+                        else => {},
+                    }
+                }
+            },
             else => {
                 indent(depth);
                 std.debug.print("Literal (complex)\n", .{});
