@@ -126,8 +126,8 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-5 |> 0  == 5 || 0 
-"hello " |> "world" == "hello world" || "world"
+5 |> 0  == 5 or 0 
+"hello " |> "world" == "hello world" or "world"
 
 default = struct {
   header: h -> #String.convert
