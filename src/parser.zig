@@ -7,7 +7,17 @@ const errors = @import("error.zig");
 pub const ParseError = error{ UnexpectedToken, InvalidAssignmentTarget, ExpectedToken, NoMatchFound, OutOfMemory };
 
 /// Parser: turns a token stream into an abstract syntax tree (AST)
-/// Implements precedence: assignment → pipe → call → try → primary
+/// Implements full precedence hierarchy (lowest → highest):
+///   assignment → or → and → pipe → call → try → primary
+///
+/// Meaning:
+///   - assignment (=) binds loosest; it wraps the full right-hand expression
+///   - or        : tolerant fallback (if left is none, evaluate right)
+///   - and       : tolerant sequencing (if left is present, evaluate right)
+///   - pipe (|>) : pipeline composition (pass result of left into right)
+///   - call      : function invocation and argument application
+///   - try       : result unwrapping or error propagation
+///   - primary   : literals, identifiers, lists, maps, lambdas, etc.
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokens: []const Token,
@@ -60,14 +70,14 @@ pub const Parser = struct {
     }
 
     fn parseAssignment(self: *Parser) !Ast.Expr {
-        const expr = try self.parsePipe();
+        const expr = try self.parseOr();
 
         if (self.match(.EQUAL)) {
             if (self.peek().type == .NEWLINE) {
                 _ = self.advance();
             }
 
-            const value = try self.parsePipe();
+            const value = try self.parseOr();
             switch (expr) {
                 .identifier => |name| {
                     const value_ptr = try self.allocator.create(Ast.Expr);
@@ -89,19 +99,148 @@ pub const Parser = struct {
         return expr;
     }
 
+    fn parseOr(self: *Parser) !Ast.Expr {
+        var expr = try self.parseAnd();
+
+        while (self.match(.OR)) {
+            while (self.check(.NEWLINE)) _ = self.advance();
+            const right = try self.parseAnd();
+
+            const lp = try self.allocator.create(Ast.Expr);
+            lp.* = expr;
+            const rp = try self.allocator.create(Ast.Expr);
+            rp.* = right;
+
+            expr = Ast.Expr{ .or_expr = .{ .left = lp, .right = rp } };
+        }
+
+        return expr;
+    }
+
+    fn parseAnd(self: *Parser) !Ast.Expr {
+        var expr = try self.parsePipe();
+
+        while (self.match(.AND)) {
+            while (self.check(.NEWLINE)) _ = self.advance();
+            const right = try self.parsePipe();
+
+            const lp = try self.allocator.create(Ast.Expr);
+            lp.* = expr;
+            const rp = try self.allocator.create(Ast.Expr);
+            rp.* = right;
+
+            expr = Ast.Expr{ .and_expr = .{ .left = lp, .right = rp } };
+        }
+
+        return expr;
+    }
+
+    // ParsePipe(self: *Parser) !Ast.Expr {
+    //     var expr = try self.parseBinary();
+
+    //     while (self.match(.PIPE)) {
+    //         self.skipNewlines();
+
+    //         const left_ptr = try self.allocator.create(Ast.Expr);
+    //         left_ptr.* = expr;
+
+    //         var right: Ast.Expr = undefined;
+
+    //         if (self.check(.TAP)) {
+    //             right = try self.parseTapStage(left_ptr);
+    //         } else {
+    //             right = try self.parseExpression();
+
+    //             const rp = try self.allocator.create(Ast.Expr);
+    //             rp.* = right;
+
+    //             right = Ast.Expr{ .pipe = .{ .left = left_ptr, .right = rp } };
+    //         }
+
+    //         expr = right;
+    //     }
+
+    //     return expr;
+    // }
+    //
     fn parsePipe(self: *Parser) !Ast.Expr {
-        var expr = try self.parseCall();
+        var expr = try self.parseBinary();
 
         while (self.match(.PIPE)) {
+            self.skipNewlines();
+
+            const left_ptr = try self.allocator.create(Ast.Expr);
+            left_ptr.* = expr;
+
+            var right: Ast.Expr = undefined;
+
+            if (self.check(.TAP)) {
+                right = try self.parseTapStage(left_ptr);
+            } else {
+                right = try self.parseExpression();
+
+                const rp = try self.allocator.create(Ast.Expr);
+                rp.* = right;
+
+                right = Ast.Expr{ .pipe = .{ .left = left_ptr, .right = rp } };
+            }
+
+            expr = right;
+        }
+
+        return expr;
+    }
+
+    fn parseTapStage(self: *Parser, left: *Ast.Expr) !Ast.Expr {
+        _ = try self.expect(.TAP);
+        self.skipNewlines();
+
+        var bindings = try std.ArrayList([]const u8).initCapacity(self.allocator, 0);
+        while (!self.check(.ARROW)) {
+            const t = try self.expect(.IDENTIFIER);
+            try bindings.append(self.allocator, t.lexeme);
+            if (!self.match(.COMMA)) break;
+            self.skipNewlines();
+        }
+
+        _ = try self.expect(.ARROW);
+        self.skipNewlines();
+
+        const right = try self.parseExpression();
+
+        const lp = try self.allocator.create(Ast.Expr);
+        lp.* = left.*;
+        const rp = try self.allocator.create(Ast.Expr);
+        rp.* = right;
+
+        return Ast.Expr{
+            .tap_expr = .{
+                .left = lp,
+                .binding = try bindings.toOwnedSlice(self.allocator),
+                .right = rp,
+            },
+        };
+    }
+
+    fn parseBinary(self: *Parser) !Ast.Expr {
+        var expr = try self.parseCall();
+
+        while (self.isBinaryOperator(self.peek().type)) {
+            const op = self.advance();
             const right = try self.parseCall();
 
             const lp = try self.allocator.create(Ast.Expr);
             lp.* = expr;
-
             const rp = try self.allocator.create(Ast.Expr);
             rp.* = right;
 
-            expr = Ast.Expr{ .pipe = .{ .left = lp, .right = rp } };
+            expr = Ast.Expr{
+                .binary = .{
+                    .left = lp,
+                    .operator = op.type,
+                    .right = rp,
+                },
+            };
         }
 
         return expr;
@@ -146,64 +285,52 @@ pub const Parser = struct {
     }
 
     fn parseMatch(self: *Parser) !Ast.Expr {
-        // consume the 'match' keyword
         _ = try self.expect(.MATCH);
 
-        // parse the value being matched
-        const value_expr = try self.parseExpression();
-        _ = try self.expect(.ARROW); // expect the '->' after value
+        // Optional value before '->'
+        var value_expr: Ast.Expr = undefined;
+
+        if (self.check(.ARROW)) {
+            // No explicit value — take it from the left-hand side of a pipe
+            value_expr = Ast.Expr{ .identifier = "_pipe_input" };
+            _ = self.advance(); // consume the arrow
+        } else {
+            // Explicit value provided
+            value_expr = try self.parseOr(); // not full parseExpression
+            _ = try self.expect(.ARROW);
+        }
 
         var branches = try std.ArrayList(Ast.MatchBranch).initCapacity(self.allocator, 4);
 
         while (!self.check(.EOF)) {
-            // skip whitespace/newlines/commas between branches
-            while (self.check(.NEWLINE) or self.check(.COMMA)) {
-                _ = self.advance();
-            }
+            while (self.check(.NEWLINE) or self.check(.COMMA)) _ = self.advance();
             if (self.check(.EOF)) break;
-            const t = self.peek().type;
+            if (self.peek().type != .IDENTIFIER) break;
 
-            // const is_stop =
-            //     t == .ARROW or // saw '->' without a pattern; don't consume it
-            //     t == .RIGHT_PAREN or // defensive if a prior parse left us here
-            //     t == .RIGHT_BRACE or // if you ever add block forms
-            //     t == .EOF;
-
-            if (t != .IDENTIFIER) break;
-
-            // --- parse the pattern (ok, err, etc.)
             const pattern_tok = self.advance();
             const pattern = pattern_tok.lexeme;
 
-            // optional binding in parentheses: ok(value) / err(message)
-            var binding: ?[]const u8 = null;
-            if (self.match(.LEFT_PAREN)) {
-                const bind_tok = self.consume(.IDENTIFIER, "expected binding name after '('");
-                binding = bind_tok.lexeme;
-                _ = try self.expect(.RIGHT_PAREN);
+            var bindings = try std.ArrayList([]const u8).initCapacity(self.allocator, 2);
+            while (!self.check(.ARROW)) {
+                const b = try self.expect(.IDENTIFIER);
+                try bindings.append(self.allocator, b.lexeme);
             }
-
-            // --- expect the arrow for this branch
             _ = try self.expect(.ARROW);
 
-            // --- parse the expression for this branch
             const branch_expr = try self.parseExpression();
-
             const branch_ptr = try self.allocator.create(Ast.Expr);
             branch_ptr.* = branch_expr;
 
             try branches.append(self.allocator, Ast.MatchBranch{
                 .pattern = pattern,
-                .binding = binding,
+                .binding = try bindings.toOwnedSlice(self.allocator),
                 .expr = branch_ptr,
             });
 
-            // optional comma or newline before next branch
             _ = self.match(.NEWLINE);
             _ = self.match(.COMMA);
         }
 
-        // wrap up match expression node
         const value_ptr = try self.allocator.create(Ast.Expr);
         value_ptr.* = value_expr;
 
@@ -215,8 +342,47 @@ pub const Parser = struct {
         };
     }
 
+    fn parseLambda(self: *Parser) !Ast.Expr {
+        var params = try std.ArrayList([]const u8).initCapacity(self.allocator, 0);
+
+        // Parse comma-separated identifiers until '->'
+        while (!self.check(.ARROW)) {
+            const t = try self.expect(.IDENTIFIER);
+            try params.append(self.allocator, t.lexeme);
+
+            if (self.match(.COMMA)) continue;
+            if (self.check(.ARROW)) break;
+
+            // Anything else here is a syntax error
+            params.deinit(self.allocator);
+            errors.report(self.peek().line, "parse", "Expected ',' or '->' in lambda parameters");
+            return error.ExpectedToken;
+        }
+
+        _ = try self.expect(.ARROW);
+        const body_expr = try self.parseExpression();
+
+        const body_ptr = try self.allocator.create(Ast.Expr);
+        body_ptr.* = body_expr;
+        const param_slice = try params.toOwnedSlice(self.allocator);
+
+        return Ast.Expr{
+            .lambda = .{
+                .params = param_slice,
+                .body = body_ptr,
+            },
+        };
+    }
+
     fn parsePrimary(self: *Parser) !Ast.Expr {
+        // --- Check for lambda first, because it starts with IDENTIFIER(s)
+        if (self.looksLikeLambda()) {
+            return try self.parseLambda();
+        }
+
+        // --- Otherwise consume next token normally
         const token = self.advance();
+
         return switch (token.type) {
             .NUMBER => Ast.Expr{ .literal = .{ .number = token.getNLiteral().? } },
             .STRING => Ast.Expr{ .literal = .{ .string = token.getSLiteral().? } },
@@ -243,6 +409,83 @@ pub const Parser = struct {
 
                 const full = try std.fmt.allocPrint(self.allocator, "#{s}.{s}", .{ ns.lexeme, func.lexeme });
                 return Ast.Expr{ .identifier = full };
+            },
+
+            .LEFT_BRACE => {
+                // { key: value, ... }
+                var entries = try std.ArrayList(Ast.Map).initCapacity(self.allocator, 0);
+
+                // Skip any newlines after '{'
+                while (self.check(.NEWLINE)) _ = self.advance();
+
+                // Empty map "{}"
+                if (self.check(.RIGHT_BRACE)) {
+                    _ = self.advance();
+                    const pairs = try entries.toOwnedSlice(self.allocator);
+                    return Ast.Expr{ .literal = .{ .map = pairs } };
+                }
+
+                while (true) {
+                    while (self.check(.NEWLINE)) _ = self.advance();
+
+                    // --- key
+                    const key_tok = self.peek();
+                    if (self.isAtEnd()) {
+                        entries.deinit(self.allocator);
+                        errors.report(key_tok.line, "parse", "Unterminated map literal (missing '}')");
+                        return error.ExpectedToken;
+                    }
+                    if (key_tok.type != .IDENTIFIER and key_tok.type != .STRING) {
+                        entries.deinit(self.allocator);
+                        errors.report(key_tok.line, "parse", "Expected identifier or string key in map");
+                        return error.UnexpectedToken;
+                    }
+                    _ = self.advance();
+
+                    // --- colon
+                    _ = try self.expect(.COLON);
+
+                    // --- value expression
+                    const value_expr = try self.parseExpression();
+                    const value_ptr = try self.allocator.create(Ast.Expr);
+                    value_ptr.* = value_expr;
+
+                    // Store pair
+                    const entry = Ast.Map{
+                        .key = key_tok.lexeme,
+                        .value = value_ptr,
+                    };
+                    try entries.append(self.allocator, entry);
+
+                    // --- separators and newlines
+                    while (self.check(.NEWLINE)) _ = self.advance();
+
+                    if (self.match(.COMMA)) {
+                        while (self.check(.NEWLINE)) _ = self.advance();
+                        if (self.check(.RIGHT_BRACE)) {
+                            _ = self.advance();
+                            break;
+                        }
+                        continue;
+                    }
+
+                    if (self.check(.RIGHT_BRACE)) {
+                        _ = self.advance();
+                        break;
+                    }
+
+                    if (self.isAtEnd()) {
+                        entries.deinit(self.allocator);
+                        errors.report(key_tok.line, "parse", "Unterminated map literal (missing '}')");
+                        return error.ExpectedToken;
+                    }
+
+                    errors.report(self.peek().line, "parse", "Expected ',' or '}' in map literal");
+                    return error.ExpectedToken;
+                }
+
+                const pairs = try entries.toOwnedSlice(self.allocator);
+                return Ast.Expr{ .literal = .{ .map = pairs } };
             },
 
             .LEFT_BRACKET => {
@@ -346,9 +589,38 @@ pub const Parser = struct {
         }
 
         return switch (next.type) {
-            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET, .UNDERSCORE, .PLUS => true,
+            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET => true,
             else => false,
         };
+    }
+
+    fn isBinaryOperator(self: *Parser, t: TokenType) bool {
+        _ = self;
+        return switch (t) {
+            .PLUS, .MINUS, .STAR, .SLASH, .GREATER, .GREATER_EQUAL, .LESS, .LESS_EQUAL, .EQUAL_EQUAL, .BANG_EQUAL => true,
+            else => false,
+        };
+    }
+
+    fn looksLikeLambda(self: *Parser) bool {
+        // scan ahead for '->' after identifiers and commas
+        var i: usize = self.current;
+        var seen_ident = false;
+
+        while (i < self.tokens.len) {
+            const t = self.tokens[i].type;
+            if (t == .IDENTIFIER) {
+                seen_ident = true;
+                i += 1;
+                continue;
+            }
+            if (t == .COMMA) {
+                i += 1;
+                continue;
+            }
+            return seen_ident and t == .ARROW;
+        }
+        return false;
     }
 
     fn check(self: *Parser, t: TokenType) bool {
@@ -367,6 +639,9 @@ pub const Parser = struct {
 
     fn isAtEnd(self: *Parser) bool {
         return self.peek().type == .EOF;
+    }
+    fn skipNewlines(self: *Parser) void {
+        while (self.check(.NEWLINE)) _ = self.advance();
     }
 };
 

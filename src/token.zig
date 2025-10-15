@@ -2,7 +2,7 @@ const std = @import("std");
 const Expr = @import("ast.zig").Expr;
 const Literals = @import("ast.zig").Literal;
 
-pub const KeywordMap = std.StaticStringMap(TokenType).initComptime(.{ .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "use", .USE }, .{ "true", .TRUE }, .{ "false", .FALSE }, .{ "none", .NONE } });
+pub const KeywordMap = std.StaticStringMap(TokenType).initComptime(.{ .{ "tap", .TAP }, .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "use", .USE }, .{ "true", .TRUE }, .{ "false", .FALSE }, .{ "none", .NONE }, .{ "and", .AND } });
 
 pub const Token = struct {
     type: TokenType,
@@ -87,6 +87,8 @@ pub const TokenType = enum {
     TRY,
     OR,
     USE,
+    AND,
+    TAP,
 
     // --- other ---
     EOF,

@@ -11,7 +11,7 @@ pub const Literal = union(enum) {
     string: []const u8,
     boolean: bool,
     list: []Expr,
-    map: []KeyValue,
+    map: []Map,
     result: ResultLiteral,
     none: void,
 };
@@ -26,21 +26,17 @@ pub const ResultTag = enum {
     err,
 };
 
-pub const KeyValue = struct {
+pub const Map = struct {
     key: []const u8,
     value: *Expr,
 };
 
-pub const Expr = union(enum) {
-    literal: Literal,
-    identifier: []const u8,
-    binary: Binary,
-    call: Call,
-    lambda: Lambda,
-    assign: Assign,
-    pipe: Pipe,
-    try_expr: TryExpr,
-    match_expr: MatchExpr,
+pub const Expr = union(enum) { literal: Literal, identifier: []const u8, binary: Binary, call: Call, lambda: Lambda, assign: Assign, pipe: Pipe, try_expr: TryExpr, match_expr: MatchExpr, or_expr: struct { left: *Expr, right: *Expr }, and_expr: struct { left: *Expr, right: *Expr }, tap_expr: TapExpr };
+
+pub const TapExpr = struct {
+    left: *Expr,
+    binding: [][]const u8,
+    right: *Expr,
 };
 
 pub const Binary = struct {
@@ -55,7 +51,7 @@ pub const Call = struct {
 };
 
 pub const Lambda = struct {
-    param: []const u8,
+    params: [][]const u8,
     body: *Expr,
 };
 
@@ -80,7 +76,7 @@ pub const MatchExpr = struct {
 
 pub const MatchBranch = struct {
     pattern: []const u8,
-    binding: ?[]const u8,
+    binding: [][]const u8,
     expr: *Expr,
 };
 
@@ -89,7 +85,173 @@ fn indent(depth: usize) void {
     for (0..depth) |_| std.debug.print("  ", .{});
 }
 
+pub fn printExpr(expr: Expr, depth: usize) void {
+    _ = struct {
+        fn run(d: usize) void {
+            var i: usize = 0;
+            while (i < d) : (i += 1) std.debug.print("  ", .{});
+        }
+    }.run;
+
+    switch (expr) {
+        .identifier => |name| {
+            indent(depth);
+            std.debug.print("Identifier: {s}\n", .{name});
+        },
+
+        .literal => |lit| switch (lit) {
+            .string => |s| {
+                indent(depth);
+                std.debug.print("String: \"{s}\"\n", .{s});
+            },
+            .number => |n| {
+                indent(depth);
+                std.debug.print("Number: {d}\n", .{n});
+            },
+            .boolean => |b| {
+                indent(depth);
+                std.debug.print("Boolean: {}\n", .{b});
+            },
+            .none => {
+                indent(depth);
+                std.debug.print("None\n", .{});
+            },
+            .list => |items| {
+                indent(depth);
+                std.debug.print("List:\n", .{});
+                for (items) |item| printExpr(item, depth + 1);
+            },
+            .map => |pairs| {
+                indent(depth);
+                std.debug.print("Map:\n", .{});
+                for (pairs) |p| {
+                    indent(depth + 1);
+                    std.debug.print("{s} :\n", .{p.key});
+                    printExpr(p.value.*, depth + 2);
+                }
+            },
+        },
+
+        .assign => |a| {
+            indent(depth);
+            std.debug.print("Assign:\n", .{});
+            indent(depth + 1);
+            std.debug.print("name: {s}\n", .{a.name});
+            indent(depth + 1);
+            std.debug.print("value:\n", .{});
+            printExpr(a.value.*, depth + 2);
+        },
+
+        .pipe => |p| {
+            indent(depth);
+            std.debug.print("Pipe\n", .{});
+            indent(depth + 1);
+            std.debug.print("├── left\n", .{});
+            printExpr(p.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("└── right\n", .{});
+            printExpr(p.right.*, depth + 2);
+        },
+
+        .tap_expr => |t| {
+            indent(depth);
+            std.debug.print("TapExpr\n", .{});
+            indent(depth + 1);
+            std.debug.print("├── left\n", .{});
+            printExpr(t.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("├── binding(s): ", .{});
+            for (t.binding, 0..) |b, i| {
+                if (i != 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{b});
+            }
+            std.debug.print("\n", .{});
+            indent(depth + 1);
+            std.debug.print("└── right\n", .{});
+            printExpr(t.right.*, depth + 2);
+        },
+
+        .binary => |b| {
+            indent(depth);
+            std.debug.print("Binary\n", .{});
+            indent(depth + 1);
+            std.debug.print("left:\n", .{});
+            printExpr(b.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("operator: {any}\n", .{b.operator});
+            indent(depth + 1);
+            std.debug.print("right:\n", .{});
+            printExpr(b.right.*, depth + 2);
+        },
+
+        .call => |c| {
+            indent(depth);
+            std.debug.print("Call\n", .{});
+            indent(depth + 1);
+            std.debug.print("├── callee\n", .{});
+            printExpr(c.callee.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("└── args\n", .{});
+            for (c.args, 0..) |arg, i| {
+                indent(depth + 2);
+                std.debug.print("arg[{d}]:\n", .{i});
+                printExpr(arg, depth + 3);
+            }
+        },
+
+        .try_expr => |te| {
+            indent(depth);
+            std.debug.print("Try\n", .{});
+            printExpr(te.expr.*, depth + 1);
+        },
+
+        .match_expr => |m| {
+            indent(depth);
+            std.debug.print("Match\n", .{});
+            indent(depth + 1);
+            std.debug.print("value:\n", .{});
+            printExpr(m.value.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("branches:\n", .{});
+            for (m.branches) |br| {
+                indent(depth + 2);
+                std.debug.print("pattern: {s}", .{br.pattern});
+                if (br.binding) |b| std.debug.print("({s})", .{b});
+                std.debug.print("\n", .{});
+                printExpr(br.expr.*, depth + 3);
+            }
+        },
+
+        .lambda => |l| {
+            indent(depth);
+            std.debug.print("Lambda\n", .{});
+            indent(depth + 1);
+            std.debug.print("params: ", .{});
+            for (l.params, 0..) |p, i| {
+                if (i != 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{p});
+            }
+            std.debug.print("\n", .{});
+            indent(depth + 1);
+            std.debug.print("body:\n", .{});
+            printExpr(l.body.*, depth + 2);
+        },
+
+        else => {
+            indent(depth);
+            std.debug.print("(Unhandled node)\n", .{});
+        },
+    }
+}
+
 pub fn debugPrint(expr: Expr, depth: usize) void {
+    _ = struct {
+        fn run(d: usize) void {
+            var i: usize = 0;
+            while (i < d) : (i += 1) std.debug.print("  ", .{});
+        }
+    }.run;
+
     switch (expr) {
         .literal => |lit| switch (lit) {
             .number => {
@@ -111,21 +273,15 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             .list => |items| {
                 indent(depth);
                 std.debug.print("List:\n", .{});
-                for (items) |item| {
+                for (items) |item| debugPrint(item, depth + 1);
+            },
+            .map => |map| {
+                indent(depth);
+                std.debug.print("Map:\n", .{});
+                for (map) |m| {
                     indent(depth + 1);
-                    switch (item) {
-                        .literal => switch (item.literal)  {
-                            .boolean => std.debug.print("item: {}\n", .{item.literal.boolean}),
-                            .string => std.debug.print("item: {s}\n", .{item.literal.string}),
-                            .number => std.debug.print("item: {d}\n", .{item.literal.number}),
-                            .none => std.debug.print("item: {}\n", .{item.literal.none}),
-                            else => {},
-                        },
-                        .identifier => switch(item) {
-                            else => std.debug.print("item: {s}\n", .{item.identifier})
-                        },
-                        else => {},
-                    }
+                    std.debug.print("{s} :\n", .{m.key});
+                    debugPrint(m.value.*, depth + 2);
                 }
             },
             else => {
@@ -139,44 +295,6 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             std.debug.print("Identifier: {s}\n", .{expr.identifier});
         },
 
-        .call => {
-            indent(depth);
-            std.debug.print("Call\n", .{});
-            indent(depth);
-            std.debug.print("├── callee\n", .{});
-            debugPrint(expr.call.callee.*, depth + 1);
-
-            if (expr.call.args.len > 0) {
-                indent(depth);
-                std.debug.print("└── args\n", .{});
-                for (expr.call.args, 0..) |arg, i| {
-                    indent(depth + 1);
-                    const is_last = (i == expr.call.args.len - 1);
-                    std.debug.print("{s} arg[{d}]:\n", .{ if (is_last) "└──" else "├──", i });
-                    debugPrint(arg, depth + 2);
-                }
-            }
-        },
-
-        .pipe => {
-            indent(depth);
-            std.debug.print("Pipe\n", .{});
-            indent(depth);
-            std.debug.print("├── left\n", .{});
-            debugPrint(expr.pipe.left.*, depth + 1);
-            indent(depth);
-            std.debug.print("└── right\n", .{});
-            debugPrint(expr.pipe.right.*, depth + 1);
-        },
-
-        .try_expr => {
-            indent(depth);
-            std.debug.print("Try\n", .{});
-            indent(depth);
-            std.debug.print("└── expr\n", .{});
-            debugPrint(expr.try_expr.expr.*, depth + 1);
-        },
-
         .assign => |a| {
             indent(depth);
             std.debug.print("Assign:\n", .{});
@@ -187,19 +305,129 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             debugPrint(a.value.*, depth + 2);
         },
 
-        .match_expr => |a| {
+        .pipe => |p| {
             indent(depth);
-            std.debug.print("Map:\n", .{});
+            std.debug.print("Pipe\n", .{});
             indent(depth + 1);
-            std.debug.print("name: {any}\n", .{a.branches});
+            std.debug.print("├── left\n", .{});
+            debugPrint(p.left.*, depth + 2);
             indent(depth + 1);
-            std.debug.print("value:\n", .{});
-            debugPrint(a.value.*, depth + 2);
+            std.debug.print("└── right\n", .{});
+            debugPrint(p.right.*, depth + 2);
         },
 
-        else => {
+        .tap_expr => |t| {
             indent(depth);
-            std.debug.print("(Unhandled node)\n", .{});
+            std.debug.print("TapExpr\n", .{});
+            indent(depth + 1);
+            std.debug.print("├── left\n", .{});
+            debugPrint(t.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("├── binding(s): ", .{});
+            for (t.binding, 0..) |b, i| {
+                if (i != 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{b});
+            }
+            std.debug.print("\n", .{});
+            indent(depth + 1);
+            std.debug.print("└── right\n", .{});
+            debugPrint(t.right.*, depth + 2);
+        },
+
+        .binary => |b| {
+            indent(depth);
+            std.debug.print("Binary\n", .{});
+            indent(depth + 1);
+            std.debug.print("left:\n", .{});
+            debugPrint(b.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("operator: {any}\n", .{b.operator});
+            indent(depth + 1);
+            std.debug.print("right:\n", .{});
+            debugPrint(b.right.*, depth + 2);
+        },
+
+        .call => |c| {
+            indent(depth);
+            std.debug.print("Call\n", .{});
+            indent(depth + 1);
+            std.debug.print("├── callee\n", .{});
+            debugPrint(c.callee.*, depth + 2);
+            if (c.args.len > 0) {
+                indent(depth + 1);
+                std.debug.print("└── args\n", .{});
+                for (c.args, 0..) |arg, i| {
+                    indent(depth + 2);
+                    std.debug.print("arg[{d}]:\n", .{i});
+                    debugPrint(arg, depth + 3);
+                }
+            }
+        },
+
+        .try_expr => |te| {
+            indent(depth);
+            std.debug.print("Try\n", .{});
+            indent(depth + 1);
+            std.debug.print("expr:\n", .{});
+            debugPrint(te.expr.*, depth + 2);
+        },
+
+        .match_expr => |m| {
+            indent(depth);
+            std.debug.print("Match\n", .{});
+            indent(depth + 1);
+            std.debug.print("value:\n", .{});
+            debugPrint(m.value.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("branches:\n", .{});
+            for (m.branches) |br| {
+                indent(depth + 2);
+                std.debug.print("pattern: {s}", .{br.pattern});
+                for (br.binding, 0..) |b, i| {
+                    std.debug.print("{s}", .{b});
+                    if (i + 1 < br.binding.len) std.debug.print(", ", .{});
+                }
+                if (br.binding.len == 0) std.debug.print("(no bindings)", .{});
+                std.debug.print("\n", .{});
+                debugPrint(br.expr.*, depth + 3);
+            }
+        },
+
+        .lambda => |lam| {
+            indent(depth);
+            std.debug.print("Lambda:\n", .{});
+            indent(depth + 1);
+            std.debug.print("params: ", .{});
+            for (lam.params, 0..) |p, i| {
+                if (i != 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{p});
+            }
+            std.debug.print("\n", .{});
+            indent(depth + 1);
+            std.debug.print("body:\n", .{});
+            debugPrint(lam.body.*, depth + 2);
+        },
+
+        .or_expr => |o| {
+            indent(depth);
+            std.debug.print("Or\n", .{});
+            indent(depth + 1);
+            std.debug.print("left:\n", .{});
+            debugPrint(o.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("right:\n", .{});
+            debugPrint(o.right.*, depth + 2);
+        },
+
+        .and_expr => |a| {
+            indent(depth);
+            std.debug.print("And\n", .{});
+            indent(depth + 1);
+            std.debug.print("left:\n", .{});
+            debugPrint(a.left.*, depth + 2);
+            indent(depth + 1);
+            std.debug.print("right:\n", .{});
+            debugPrint(a.right.*, depth + 2);
         },
     }
 }

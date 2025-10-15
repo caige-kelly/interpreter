@@ -72,7 +72,7 @@ x = 42
 this |> broken
 
 #String.concat [
-    "The answer is ", x 
+    "The answer is ", x
 ] |> #IO.stdout _
 
 cache = #Map.new { data: null, version: 1 }
@@ -84,11 +84,11 @@ cache = #Map.new { data: null, version: 1 }
 // -------------------------------------------------------------
 
 file =
-  #File.read ./bad/path.json
+  #File.read "./bad/path.json"
   |> #Map.parse
   |> #Map.get config
   or
-  #File.read ./good/path.json
+  #File.read "./good/path.json"
   |> #Map.parse
   or #Map.new { default: "fallback" }
 
@@ -99,11 +99,11 @@ file =
 // 3. Monadic result with dual-channel + peek (transparent)
 // -------------------------------------------------------------
 
-status =
-  @Net.get https://example.com/health         // ok(body, {status, ms}) or err(msg, {code, ms})
-  |> peek e -> @Slack.post "Health check failed: " + e    // logs on err; Result unchanged
+@status =
+  @Net.get "https://example.com/health"        // ok(body, {status, ms}) or err(msg, {code, ms})
+  |> tap e, a, b -> @Slack.post "Health check failed: " + e    // logs on err; Result unchanged
 
-status
+@status
   |> match ->
        ok body meta -> #IO.stdout "Service healthy (" + meta.status + ")"
        err msg  meta -> #IO.stdout "Service unhealthy: " + msg
@@ -147,7 +147,7 @@ data =
       then err("restart failed", sys)
 
 @restart_service nginx
-  |> peek e -> @Slack.post "Restart failed for nginx: " + e
+  |> tap e -> @Slack.post "Restart failed for nginx: " + e
 
 // -------------------------------------------------------------
 // 7. Pure function definition
