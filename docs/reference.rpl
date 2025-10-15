@@ -126,7 +126,7 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-default = struct { // struct desugars to _ -> #Map.Merge 
+default = struct { // struct desugars to _ -> #Map.merge 
   header: "",
   body: "",
   response: "",
