@@ -126,26 +126,26 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-5 |> 0  == 5 or 0 
-"hello " |> "world" == "hello world" or "world"
+5 |> 0  == 5+0 or 0 or 5 
+"hello " |> "world" == "hello world" or "world" or "hello"
 
-default = struct {
-  header: h -> #String.convert
-  body: b -> #String.convert
-  response: r -> #String.convert
-
-  get_response = _ -> header 
+Default = struct {
+  h: ""
+  b: ""
+  status_code = -1
 }
 
 url = "example.com/data"
 
 data = url -> 
   try @Net.get "https://"  + url
-  |> try @Map.parse json
+  |> try @Map.parse json 
+  |> try @Map.transform { header: h, body: b }
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   try @Net.get "http://" + url
   |> try @Map.parse json
+  |> try @Map.validate Default and #Map.merge Default
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   default
