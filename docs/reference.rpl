@@ -20,7 +20,7 @@
 // Core operators:
 //   |>      — pipeline forward
 //   or      — associative fallback if left == none (identity: none)
-//   peek    — observe .err side effects, return the same Result unchanged
+//   tap    — observe .err side effects, return the same Result unchanged
 //   then    — sequencing (discard left, run right)
 //   match   — destructure ok/err (only when you actually need branching)
 //   ^       — unwrap ok or propagate err upward (when unwrapping is needed)
@@ -31,9 +31,9 @@
 //   Monadic propagation:
 //     ok(u, s)  |> f = f(u, s)
 //     err(u, s) |> f = err(u, s)
-//   peek f:
-//     peek f (ok(u, s))  = ok(u, s)
-//     peek f (err(u, s)) = f(u, s) then err(u, s)
+//   tap f:
+//     tap f (ok(u, s))  = ok(u, s)
+//     tap f (err(u, s)) = f(u, s) then err(u, s)
 //
 // -------------------------------------------------------------
 // Program supervision & tracing
@@ -85,7 +85,7 @@ cache = #Map.new { data: null, version: 1 }
 
 file =
   #File.read "./bad/path.json"
-  |> #Map.parse
+  |> #Map.parse 
   |> #Map.get config
   or
   #File.read "./good/path.json"
@@ -129,26 +129,27 @@ match config.env ->
 5 |> 0  == 5+0 or 0 or 5 
 "hello " |> "world" == "hello world" or "world" or "hello"
 
-Default = struct {
+Default = { 
   h: ""
   b: ""
   status_code = -1
+  metadata = "additonal Metadata"
 }
 
 url = "example.com/data"
 
 data = url -> 
-  try @Net.get "https://"  + url
-  |> try @Map.parse json 
-  |> try @Map.transform { header: h, body: b }
+  try @Net.get "https://"  + url  // returns "{ "header": "some header", "body": "some body"}
+  |> try @Map.parse json _ 
+  |> try @Map.translate default _ { header: h, body: b }
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
-  try @Net.get "http://" + url
-  |> try @Map.parse json
-  |> try @Map.validate Default and #Map.merge Default
+  try @Net.get "http://" + url // returns "{ "header": "some header", "body": "some body"}
+  |> try @Map.parse json _
+  |> try @Map.validate Default _ and #Map.merge Default
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
-  default
+  Default
 
 #Map.stringify data
   |> #IO.stdout "Data => " + _
@@ -182,7 +183,7 @@ sum
 
 data2 =
   @File.read ./input.txt
-  |> @Map.parse
+  |> @Map.parse _
   |> peek e -> @IO.stdout "Parse failed: " + e
   or #Map.new { data: none }
 
