@@ -126,11 +126,24 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-data =
-  @Net.get https://example.com/data
-  |> @Map.parse
-  |> peek e -> @IO.stdout "Fetch or parse failed: " + e
-  or #Map.new {}
+default = struct { // struct desugars to _ -> #Map.Merge 
+  header: "",
+  body: "",
+  response: "",
+}
+
+url = "example.com/data"
+
+data = url -> 
+  try @Net.get "https://"  + url
+  |> @Map.parse json
+  |> tap e -> @IO.stdout "Fetch or parse failed: " + e
+or
+  try @Net.get "http://" + url
+  |> @Map.parse json
+  |> tap e -> @IO.stdout "Fetch or parse failed: " + e
+or
+  default
 
 #Map.stringify data
   |> #IO.stdout "Data => " + _
