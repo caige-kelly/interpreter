@@ -113,7 +113,7 @@ file =
 // -------------------------------------------------------------
 
 config =
-  #File.read ./config.json
+  #File.read ./config.json something this
   |> #Map.parse
   or #Map.new { env: dev, service: demo }
 
@@ -126,10 +126,15 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-default = struct { // struct desugars to _ -> #Map.merge 
-  header: "",
-  body: "",
-  response: "",
+5 |> 0  == 5 || 0 
+"hello " |> "world" == "hello world" || "world"
+
+default = struct {
+  header: h -> #String.convert
+  body: b -> #String.convert
+  response: r -> #String.convert
+
+  get_response = _ -> header 
 }
 
 url = "example.com/data"
