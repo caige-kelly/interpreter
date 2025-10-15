@@ -136,11 +136,11 @@ url = "example.com/data"
 
 data = url -> 
   try @Net.get "https://"  + url
-  |> @Map.parse json
+  |> try @Map.parse json
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   try @Net.get "http://" + url
-  |> @Map.parse json
+  |> try Map.parse json
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   default
