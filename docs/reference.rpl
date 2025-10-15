@@ -140,7 +140,7 @@ data = url ->
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   try @Net.get "http://" + url
-  |> try Map.parse json
+  |> try @Map.parse json
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
   default
