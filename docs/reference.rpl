@@ -65,68 +65,163 @@
 // 1. Basic values and pure operations
 // -------------------------------------------------------------
 
-y = 100
+// =====================================================================
+// Design Philosophy: Language + IDE as Partners
+// =====================================================================
+//
+// Ripple's syntax is intentionally clean and minimal (like Python).
+// Type rigor and semantic clarity are provided by IDE tooling:
+//
+// - Hover over 'x := 5' to see 'x: number'
+// - Hover over '@fetch_user' to see 'returns Result<User, Error>'
+// - Inline type hints reveal inferred types throughout
+// - IDE marks @-functions differently from #-functions
+// - Verbose tracing available via IDE plugin
+//
+// This lets users write clean, simple code while the IDE reveals
+// the rigorous type system and error handling semantics underneath.
+// Best of Python's readability + Haskell's type safety.
+//
 
-x = 42
+// =====================================================================
+// Type System & Values
+// =====================================================================
+//
+// Types are inferred and static (no implicit coercion).
+// Once a variable is a string, it's a string.
+//
+// Fundamental types:
+//   number      — unified int/float (hybrid: preserves int precision when possible)
+//   bool        — true or false
+//   string      — text
+//   none        — absence of value
+//
+// Composite types:
+//   [T]         — list of T
+//   {key: T}    — map with key → T
+//   Result<V, E> — monadic result (all stdlib functions return this)
+//
+// Result<V, E> has two channels:
+//   user: V or E  — the semantic value (what your code cares about)
+//   sys: S        — system metadata (duration, status, ids, etc.)
+//
 
-this |> broken
+// =====================================================================
+// Variables & Immutability
+// =====================================================================
 
-#String.concat [
-    "The answer is ", x
-] |> #IO.stdout _
+// Type inference with := (default, ~90% of use)
+x := 42                          // inferred as number (int precision)
+y := 3.14                        // inferred as number (float)
+name := "alice"                  // inferred as string
+active := true                   // inferred as bool
+none_value := none               // inferred as none type
 
-cache = #Map.new { data: null, version: 1 }
-#Map.stringify cache
-  |> #IO.stdout _
+// number type unifies int and float operations
+sum := 10 + 5                    // number
+product := 2.5 * 4               // number
+mixed := 10 + 3.14               // number (both work together)
 
-// -------------------------------------------------------------
-// 2. Pure tolerant pipelines (or-mon oid)
-// -------------------------------------------------------------
+// Explicit type annotation with = (rare, for clarity in complex pipelines)
+result: Result<User, Error> =
+  @Net.get url
+    |> @Map.parse _
+    |> @Map.validate schema _
 
 file =
   #File.read "./bad/path.json"
-  |> #Map.parse 
+  |> #Map.parse
   |> #Map.get config
   or
   #File.read "./good/path.json"
   |> #Map.parse
   or #Map.new { default: "fallback" }
 
-#Map.stringify file
-  |> #IO.stdout "File used => " + _
+// Shadowing: rebind a name (creates new binding, old is unreachable)
+count := 1
+count := count + 1               // shadows previous count, now 2
+count := count * 2               // shadows again, now 4
 
-// -------------------------------------------------------------
-// 3. Monadic result with dual-channel + peek (transparent)
-// -------------------------------------------------------------
+// All variables are immutable by default
+// Rebinding with := creates a new binding; old binding is shadowed
+x := 10
+x := 20                          // OK: x is now 20, previous 10 is gone
+// (no reassignment operator; everything flows through functional style)
 
-@status =
-  @Net.get "https://example.com/health"        // ok(body, {status, ms}) or err(msg, {code, ms})
-  |> tap e, a, b -> @Slack.post "Health check failed: " + e    // logs on err; Result unchanged
+// =====================================================================
+// Functions
+// =====================================================================
 
-@status
+// Everything is a lambda bound to a name
+// (no fn keyword; functions are just expressions)
+
+// Simple function
+add := a, b -> a + b
+result := add 10 32              // result = 42
+
+// Functions with parameter type annotations (optional, for clarity)
+multiply := x: number, y: number ->
+  x * y
+
+// Multi-line function (implicit return of last expression)
+process := x ->
+  y := x + 1
+  z := y * 2
+  z                              // implicitly returned
+
+// Monadic function (returns Result, caller decides interpretation)
+// Marked with @ in definition → returns Result<T, E>
+@fetch_user := id ->
+  @Net.get ("https://api.example.com/users/" + id)
+    |> @Map.parse _
+    |> @Map.translate default _ { id: id, name: name }
+
+// Tolerant function (marked with # in definition)
+// Returns value | none (errors are suppressed)
+#load_config := path ->
+  #File.read path
+    |> #Map.parse _
+    or #Map.new { env: "dev" }
+
+// =====================================================================
+// Result Interpretation (Caller-Driven)
+// =====================================================================
+
+// The stdlib returns Result<T, E> by default.
+// The caller decides how to interpret it using @ or #.
+
+// Example: @Net.get always returns Result<Body, Error>
+
+// 1. MONADIC: Use @ to expose both channels
+response := @Net.get "https://example.com/api"
+response
   |> match ->
-       ok body meta -> #IO.stdout "Service healthy (" + meta.status + ")"
-       err msg  meta -> #IO.stdout "Service unhealthy: " + msg
+       ok(body, meta) ->
+         #IO.stdout ("Status: " + meta.status)
+       err(msg, meta) ->
+         #IO.stdout ("Error: " + msg)
 
-// -------------------------------------------------------------
-// 4. Pure fallback example
-// -------------------------------------------------------------
+// 2. TOLERANT: Use # to collapse to value | none
+data := #Net.get "https://example.com/api"
+// If the request succeeds: data = body
+// If it fails: data = none
 
 config =
   #File.read ./config.json something this
   |> #Map.parse
   or #Map.new { env: dev, service: demo }
 
-match config.env ->
-  prod -> #IO.stdout "Production mode"
-  dev  -> #IO.stdout "Development mode"
-  _    -> #IO.stdout "Unknown environment"
+// =====================================================================
+// Pipeline Operator (|>)
+// =====================================================================
 
-// -------------------------------------------------------------
-// 5. Monadic chain with graceful tolerant fallback at the end
-// -------------------------------------------------------------
+// Forward pipe: pass result of left into right
+result :=
+  "hello world"
+    |> #String.uppercase _
+    |> #String.split " "
 
-Default = { 
+Default = {
   h: ""
   b: ""
   status_code = -1
@@ -135,9 +230,9 @@ Default = {
 
 url = "example.com/data"
 
-data = url -> 
+data = url ->
   try @Net.get "https://"  + url  // returns "{ "header": "some header", "body": "some body"}
-  |> try @Map.parse json _ 
+  |> try @Map.parse json _
   |> try @Map.translate default _ { header: h, body: b }
   |> tap e -> @IO.stdout "Fetch or parse failed: " + e
 or
@@ -148,35 +243,42 @@ or
 or
   Default
 
-#Map.stringify data
-  |> #IO.stdout "Data => " + _
+// =====================================================================
+// Tolerant Operators
+// =====================================================================
 
-// -------------------------------------------------------------
-// 6. User-defined monadic function (dual-channel in matches)
-// -------------------------------------------------------------
+// or: fallback if left is none (monoid identity: none)
+fallback :=
+  #File.read "./optional.json"
+    or #Map.new { default: true }
 
-@restart_service = name ->
-  match @Process.kill name ->
-    ok _ sys   -> @Process.start name
-    err msg sys ->
-      @IO.stdout "Restart failed for " + name + ": " + msg
-      then err("restart failed", sys)
+// then: sequence only if left is present (not none)
+// Right side only evaluates if left is not none
+result :=
+  #File.read "./required.json"
+    then #Map.parse _
+    then #Map.validate schema _
 
-@restart_service nginx
-  |> tap e -> @Slack.post "Restart failed for nginx: " + e
+// =====================================================================
+// tap: Observational Side Effects
+// =====================================================================
 
-// -------------------------------------------------------------
-// 7. Pure function definition
-// -------------------------------------------------------------
+// tap performs side effects without changing the piped value
+// Pattern matches the value; if match succeeds, runs side effect; always returns original value
 
-#Math.add = a b -> a + b
-sum = #Math.add 10 32
-sum
-  |> #IO.stdout "Sum => " + _
+// Observe Result errors (only runs if err pattern matches)
+result :=
+  @Net.post "https://api.example.com/events" payload
+    |> tap err(msg, meta) ->
+         @Slack.post ("Error posting event: " + msg)
+    or #Map.new { status: "failed" }
 
-// -------------------------------------------------------------
-// 8. Graceful monadic recovery with metadata
-// -------------------------------------------------------------
+// Observe Result success (only runs if ok pattern matches)
+data :=
+  @Net.get url
+    |> tap ok(body, meta) ->
+         @IO.stdout ("Fetched: " + body)
+    |> @Map.parse _
 
 data2 =
   @File.read ./input.txt
@@ -184,34 +286,189 @@ data2 =
   |> peek e -> @IO.stdout "Parse failed: " + e
   or #Map.new { data: none }
 
-#Map.stringify data2
-  |> #IO.stdout "Recovered data => " + _
+// Pattern matching on complex structures
+users :=
+  @fetch_users
+    |> tap [head, ...rest] ->
+         @IO.stdout ("First user: " + head.name)
+    |> tap any ->
+         @IO.stdout ("Processed users")
 
-// -------------------------------------------------------------
-// 9. None propagation in pure context
-// -------------------------------------------------------------
+// =====================================================================
+// Pattern Matching
+// =====================================================================
 
-result_none =
-  #File.read ./not_there
-  |> #Map.parse
-  |> #IO.stdout "This should not print: " + _
+// match: destructure Result or other values
+response :=
+  @Net.get "https://example.com/status"
+    |> match ->
+         ok(body, meta) ->
+           "Service healthy: " + body.status
+         err(msg, meta) ->
+           "Service down: " + msg
 
-#IO.stdout "Done (if reached, none propagation worked)"
+// match can also be on other types
+status := "active"
+message :=
+  status |> match ->
+    "active" -> "Running"
+    "paused" -> "Paused"
+    any -> "Unknown"
 
-// -------------------------------------------------------------
-// 10. Full deployment pipeline demo (error propagation + peek + fallback)
-// -------------------------------------------------------------
+// =====================================================================
+// Collections
+// =====================================================================
 
-deploy =
-  @File.read ./deploy.json
-  |> @Map.parse
-  |> @Net.post https://deploy
-  |> peek e -> @Slack.post "Deploy failed: " + e
-  or #Map.new { status: skipped }
+// Lists
+numbers := [1, 2, 3, 4, 5]
+empty_list := []
 
-#Map.stringify deploy
-  |> #IO.stdout "Deploy result => " + _
+nested := [
+  [1, 2],
+  [3, 4],
+  [5, 6]
+]
 
-// -------------------------------------------------------------
-// End of reference script
-// -------------------------------------------------------------
+// Maps
+user := {
+  id: 42,
+  name: "alice",
+  email: "alice@example.com"
+}
+
+empty_map := {}
+
+// Map access (returns none if key missing)
+user_name := #Map.get user "name"      // returns "alice" or none
+user_name or "unknown"
+
+// =====================================================================
+// Control Flow via match
+// =====================================================================
+
+// match replaces if/else (no if/else in this language)
+status |> match ->
+  "active" -> "Running"
+  "paused" -> "Paused"
+  any -> "Unknown"
+
+// =====================================================================
+// Comprehensive Example: Web Service Request Pipeline
+// =====================================================================
+
+@get_user_posts := user_id ->
+  user_data :=
+    @Net.get ("https://api.example.com/users/" + user_id)
+      |> @Map.parse _
+
+  posts_data :=
+    @Net.get ("https://api.example.com/posts?user=" + user_id)
+      |> @Map.parse _
+
+  combined :=
+    user_data
+      |> @Map.translate default _
+           { user: user, posts: posts_data }
+
+  combined
+
+// Caller can use it monadically
+result := @get_user_posts 123
+result
+  |> match ->
+       ok(data, meta) ->
+         #IO.stdout ("Fetched " + data.posts.length + " posts")
+       err(msg, meta) ->
+         @Slack.post ("Failed to fetch posts: " + msg)
+
+// Or tolerantly
+posts := #get_user_posts 123
+// posts = [Post, ...] or none
+
+// =====================================================================
+// Indentation-Based Blocks
+// =====================================================================
+
+process_data := raw_json ->
+  data := #Map.parse raw_json   // bind parsed data
+
+  data := data                   // shadow: validate and enrich
+    |> @Map.validate schema _
+    |> match ->
+         ok(v, m) -> v
+         err(e, m) -> #Map.new { default: true }
+
+  data                           // implicitly returned
+
+// =====================================================================
+// Error Handling with Graceful Fallback
+// =====================================================================
+
+deployed :=
+  @File.read "./deploy.json"
+    |> @Map.parse _
+    |> @Net.post "https://deploy.example.com" _
+    |> tap err ->
+         @Slack.post ("Deploy failed: " + err)
+    or #Map.new { status: "skipped" }
+
+#IO.stdout ("Deploy result: " + deployed.status)
+
+// =====================================================================
+// None Propagation (Pure/Tolerant Context)
+// =====================================================================
+
+// In a pure chain, none propagates and skips later steps
+result :=
+  #File.read "./missing.json"
+    |> #Map.parse _
+    |> #IO.stdout "This won't print"
+
+// result is none, and "This won't print" is never executed
+
+// =====================================================================
+// Program Supervision & Tracing
+// =====================================================================
+
+#Program.verbosity = "verbose"
+
+// When verbose, the supervisor logs EVERY evaluated expression:
+//   line :: binding :: function/operator :: user_value :: system_value
+//
+// Example trace lines:
+//   15 :: config :: #File.read :: "..." :: {duration: 2ms}
+//   28 :: _ :: @Net.get :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
+//   29 :: _ :: tap :: ok(...) :: {side_effect: "slack_posted"}
+//   30 :: deploy :: or :: { status: "skipped" } :: {source: "fallback"}
+
+// =====================================================================
+// Standard Library (Partial List)
+// =====================================================================
+
+// File I/O (returns Result)
+@File.read := path -> Result<string, Error>
+@File.write := path data -> Result<none, Error>
+
+// Map operations (returns Result)
+@Map.parse := text -> Result<Map, Error>
+@Map.validate := map schema -> Result<Map, Error>
+
+// Network (returns Result)
+@Net.get := url -> Result<string, Error>
+@Net.post := url data -> Result<string, Error>
+
+// String operations (tolerant)
+#String.uppercase := text -> string
+
+#String.split := text sep -> [string]
+
+// IO (returns Result for side effects)
+@IO.stdout := message -> Result<none, Error>
+@IO.exit := code -> Result<none, Error>
+
+// Slack integration (returns Result)
+@Slack.post := message -> Result<none, Error>
+
+// =====================================================================
+// End of Reference
+// =====================================================================

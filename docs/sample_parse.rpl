@@ -1,15 +1,95 @@
-#Program.verbosity verbose
+// =====================================================================
+// Ripple Test Script
+// Tests core language features for parser validation
+// =====================================================================
 
-match something ->
-  ok(v) -> something
-  err(msg) -> something
+// Basic bindings and arithmetic
+x := 10
+y := 20
+sum := x + y
 
-match something -> ok -> something, err -> something
+#IO.stdout "Sum: " + sum
 
-//result = @Args.option config |> @Args.Start |> @Args.Start
-//@Args.option config |> @File.Read |> @Parse json |> @Service.Start "steam"
-//[parser] call arg detected (token=IDENTIFIER)
-//[parser] call built (token=PIPE)
-//[parser] built PIPE node (next=PIPE)
-//[parser] built PIPE node (next=EOF)
-//[parser] <<< end expression (token=EOF)
+// Lambdas with parameters
+add := a: number, b: number -> a + b
+result := add 5 3
+
+#IO.stdout "Add result: " + result
+
+// Function with multiple statements (implicit return)
+double_and_add := x ->
+  doubled := x * 2
+  final := doubled + 1
+  final
+
+computed := double_and_add 7
+#IO.stdout "Computed: " + computed
+
+// Tolerant pipeline with fallback
+config :=
+  #File.read "./config.json"
+    |> #Map.parse _
+    or #Map.new { env: "dev" }
+
+#IO.stdout "Config env: " + config.env
+
+// Monadic pipeline with error handling
+@fetch_data := url ->
+  @Net.get url
+    |> @Map.parse _
+    |> @Map.validate schema _
+
+// Caller interprets monadically
+response := @fetch_data "https://api.example.com/data"
+response
+  |> match ->
+       ok(data, meta) ->
+         #IO.stdout "Success: " + data
+       err(msg, meta) ->
+         #IO.stdout "Error: " + msg
+
+// Caller interprets tolerantly
+safe_data := #fetch_data "https://api.example.com/data"
+
+// then operator (sequence if not none)
+required :=
+  #File.read "./required.json"
+    then #Map.parse _
+    then #Map.validate schema _
+
+// tap for side effects
+logged :=
+  @Net.post "https://api.example.com/events" event
+    |> tap err(msg, meta) ->
+         @Slack.post "Event failed: " + msg
+    or #Map.new { status: "failed" }
+
+// Pattern matching
+status := "active"
+display :=
+  status |> match ->
+    "active" -> "Running"
+    "paused" -> "Paused"
+    any -> "Unknown"
+
+#IO.stdout "Status: " + display
+
+// Collections
+numbers := [1, 2, 3, 4, 5]
+first := numbers
+
+user := {
+  id: 42,
+  name: "alice",
+  active: true
+}
+
+name := #Map.get user "name" or "unknown"
+#IO.stdout "User: " + name
+
+// Shadowing
+count := 0
+count := count + 1
+count := count * 10
+
+#IO.stdout "Final count: " + count
