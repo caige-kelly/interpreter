@@ -126,9 +126,6 @@ match config.env ->
 // 5. Monadic chain with graceful tolerant fallback at the end
 // -------------------------------------------------------------
 
-5 |> 0  == 5+0 or 0 or 5 
-"hello " |> "world" == "hello world" or "world" or "hello"
-
 Default = { 
   h: ""
   b: ""
