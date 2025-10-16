@@ -72,7 +72,7 @@ pub const Parser = struct {
     fn parseAssignment(self: *Parser) !Ast.Expr {
         const expr = try self.parseOr();
 
-        if (self.match(.EQUAL)) {
+        if (self.match(.COLON_EQUAL)) {
             if (self.peek().type == .NEWLINE) {
                 _ = self.advance();
             }
@@ -100,11 +100,11 @@ pub const Parser = struct {
     }
 
     fn parseOr(self: *Parser) !Ast.Expr {
-        var expr = try self.parseAnd();
+        var expr = try self.parseThen();
 
         while (self.match(.OR)) {
             while (self.check(.NEWLINE)) _ = self.advance();
-            const right = try self.parseAnd();
+            const right = try self.parseThen();
 
             const lp = try self.allocator.create(Ast.Expr);
             lp.* = expr;
@@ -117,10 +117,10 @@ pub const Parser = struct {
         return expr;
     }
 
-    fn parseAnd(self: *Parser) !Ast.Expr {
+    fn parseThen(self: *Parser) !Ast.Expr {
         var expr = try self.parsePipe();
 
-        while (self.match(.AND)) {
+        while (self.match(.THEN)) {
             while (self.check(.NEWLINE)) _ = self.advance();
             const right = try self.parsePipe();
 
@@ -129,40 +129,12 @@ pub const Parser = struct {
             const rp = try self.allocator.create(Ast.Expr);
             rp.* = right;
 
-            expr = Ast.Expr{ .and_expr = .{ .left = lp, .right = rp } };
+            expr = Ast.Expr{ .then_expr = .{ .left = lp, .right = rp } };
         }
 
         return expr;
     }
 
-    // ParsePipe(self: *Parser) !Ast.Expr {
-    //     var expr = try self.parseBinary();
-
-    //     while (self.match(.PIPE)) {
-    //         self.skipNewlines();
-
-    //         const left_ptr = try self.allocator.create(Ast.Expr);
-    //         left_ptr.* = expr;
-
-    //         var right: Ast.Expr = undefined;
-
-    //         if (self.check(.TAP)) {
-    //             right = try self.parseTapStage(left_ptr);
-    //         } else {
-    //             right = try self.parseExpression();
-
-    //             const rp = try self.allocator.create(Ast.Expr);
-    //             rp.* = right;
-
-    //             right = Ast.Expr{ .pipe = .{ .left = left_ptr, .right = rp } };
-    //         }
-
-    //         expr = right;
-    //     }
-
-    //     return expr;
-    // }
-    //
     fn parsePipe(self: *Parser) !Ast.Expr {
         var expr = try self.parseBinary();
 
@@ -432,7 +404,7 @@ pub const Parser = struct {
 
             .LEFT_BRACE => {
                 // { key: value, ... }
-                var entries = try std.ArrayList(Ast.Map).initCapacity(self.allocator, 0);
+                var entries = try std.ArrayList(Ast.MapPair).initCapacity(self.allocator, 0);
 
                 // Skip any newlines after '{'
                 while (self.check(.NEWLINE)) _ = self.advance();
@@ -441,7 +413,7 @@ pub const Parser = struct {
                 if (self.check(.RIGHT_BRACE)) {
                     _ = self.advance();
                     const pairs = try entries.toOwnedSlice(self.allocator);
-                    return Ast.Expr{ .literal = .{ .map = pairs } };
+                    return Ast.Expr{  .map = .{ .pairs = pairs}  };
                 }
 
                 while (true) {
@@ -470,9 +442,9 @@ pub const Parser = struct {
                     value_ptr.* = value_expr;
 
                     // Store pair
-                    const entry = Ast.Map{
+                    const entry = Ast.MapPair{
                         .key = key_tok.lexeme,
-                        .value = value_ptr,
+                        .value = value_ptr.*,
                     };
                     try entries.append(self.allocator, entry);
 
@@ -499,12 +471,13 @@ pub const Parser = struct {
                         return error.ExpectedToken;
                     }
 
+                    entries.deinit(self.allocator);
                     errors.report(self.peek().line, "parse", "Expected ',' or '}' in map literal");
                     return error.ExpectedToken;
                 }
 
                 const pairs = try entries.toOwnedSlice(self.allocator);
-                return Ast.Expr{ .literal = .{ .map = pairs } };
+                return Ast.Expr{ .map = .{ .pairs = pairs }};
             },
 
             .LEFT_BRACKET => {
@@ -518,7 +491,7 @@ pub const Parser = struct {
                 if (self.check(.RIGHT_BRACKET)) {
                     _ = self.advance(); // consume ']'
                     const items = try items_list.toOwnedSlice(self.allocator);
-                    return Ast.Expr{ .literal = .{ .list = items } };
+                    return Ast.Expr{  .list = .{ .elements = items }};
                 }
 
                 // Parse first and subsequent elements
@@ -565,7 +538,7 @@ pub const Parser = struct {
                 }
 
                 const items = try items_list.toOwnedSlice(self.allocator);
-                return Ast.Expr{ .literal = .{ .list = items } };
+                return Ast.Expr{ .list = .{ .elements =  items }};
             },
 
             else => {
@@ -608,7 +581,7 @@ pub const Parser = struct {
         }
 
         return switch (next.type) {
-            .IDENTIFIER, .STRING, .NUMBER, .TRUE, .FALSE, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET => true,
+            .IDENTIFIER, .STRING, .NUMBER, .AT, .HASH, .LEFT_BRACE, .LEFT_BRACKET, => true,
             else => false,
         };
     }

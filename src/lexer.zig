@@ -2,7 +2,7 @@ const std = @import("std");
 const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
-const Literal = @import("ast.zig").Literal;
+const Literal = @import("ast.zig").LiteralExpr;
 const KeywordMap = @import("token.zig").KeywordMap;
 
 const initial_token_capacity = 4096;
@@ -23,42 +23,42 @@ pub const Lexer = struct {
     pending_dedents: usize = 0,
     at_line_start: bool = true,
 
-    pub fn init(source: []const u8, allocator: std.mem.Allocator) Lexer {
+    pub fn init(source: []const u8, allocator: std.mem.Allocator) !Lexer {
         return .{
             .source = source,
-            .tokens = std.ArrayList(Token).init(allocator),
+            .tokens =  try std.ArrayList(Token).initCapacity(allocator, 0),
             .allocator = allocator,
-            .indent_stack = std.ArrayList(usize).init(allocator),
+            .indent_stack = try std.ArrayList(usize).initCapacity(allocator, 0),
         };
     }
 
     pub fn scanTokens(self: *Lexer) ![]const Token {
         // Initialize indent stack with 0
-        try self.indent_stack.append(0);
+        try self.indent_stack.append(self.allocator,0);
 
         while (!self.isAtEnd()) {
             // Handle indentation at line start
             if (self.at_line_start and !self.isAtEnd()) {
-                self.handleIndentation();
+                try self.handleIndentation();
                 self.at_line_start = false;
             }
 
             if (self.isAtEnd()) break;
 
-            self.scanToken();
+            _ = try self.scanToken();
         }
 
         // Emit remaining dedents at EOF
         while (self.indent_stack.items.len > 1) {
             _ = self.indent_stack.pop();
-            try self.addToken(.DEDENT, "");
+            try self.makeToken(.DEDENT, .none);
         }
 
-        try self.addToken(.EOF, "");
+        try self.makeToken(.EOF, .none);
         return self.tokens.items;
     }
 
-    fn handleIndentation(self: *Lexer) void {
+    fn handleIndentation(self: *Lexer) !void {
         var indent: usize = 0;
 
         // Count leading whitespace (spaces only, not tabs for simplicity)
@@ -68,13 +68,13 @@ pub const Lexer = struct {
             } else {
                 indent += 4; // Tab = 4 spaces
             }
-            self.advance();
+            _ = self.advance();
         }
 
         // Skip blank lines and comments
         if (self.isAtEnd() or self.peek() == '\n' or self.peek() == '#') {
             while (!self.isAtEnd() and self.peek() != '\n') {
-                self.advance();
+                _ = self.advance();
             }
             return;
         }
@@ -83,8 +83,8 @@ pub const Lexer = struct {
 
         if (indent > current_indent) {
             // Indent increased
-            self.indent_stack.append(indent) catch unreachable;
-            self.tokens.append(.{
+            try self.indent_stack.append(self.allocator,indent);
+            self.tokens.append(self.allocator, .{
                 .type = .INDENT,
                 .lexeme = "",
                 .line = self.line,
@@ -94,7 +94,8 @@ pub const Lexer = struct {
             // Dedent: may need multiple DEDENT tokens
             while (self.indent_stack.items.len > 1 and self.indent_stack.items[self.indent_stack.items.len - 1] > indent) {
                 _ = self.indent_stack.pop();
-                self.tokens.append(.{
+                self.tokens.append(self.allocator,
+                .{
                     .type = .DEDENT,
                     .lexeme = "",
                     .line = self.line,
@@ -116,7 +117,7 @@ pub const Lexer = struct {
             ']' => return self.makeToken(.RIGHT_BRACKET, .none),
             ',' => return self.makeToken(.COMMA, .none),
             '.' => return self.makeToken(.DOT, .none),
-            ':' => return self.makeToken(.COLON, .none),
+            ':' => return if (self.match('=')) self.makeToken(.COLON_EQUAL, .none) else self.makeToken(.COLON, .none),
             '+' => return self.makeToken(.PLUS, .none),
             '-' => {
                 if (self.match('>')) return self.makeToken(.ARROW, .none);
@@ -232,13 +233,13 @@ pub const Lexer = struct {
         const start = self.start;
 
         while (!self.isAtEnd() and isNumber(self.peek())) {
-            self.advance();
+            _ = self.advance();
         }
 
         if (!self.isAtEnd() and self.peek() == '.' and isNumber(self.peekNext())) {
-            self.advance();
+            _ = self.advance();
             while (!self.isAtEnd() and isNumber(self.peek())) {
-                self.advance();
+                _ = self.advance();
             }
         }
 
@@ -331,8 +332,6 @@ pub const Lexer = struct {
     fn makeToken(self: *Lexer, t: TokenType, literal: Literal) !void {
         var lit = literal;
         switch (t) {
-            .TRUE => lit = .{ .boolean = true },
-            .FALSE => lit = .{ .boolean = false },
             .NONE => lit = .{ .none = {} }, // empty struct for void
             else => {},
         }

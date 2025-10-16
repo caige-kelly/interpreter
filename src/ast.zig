@@ -1,25 +1,21 @@
 const std = @import("std");
-const Literal = @import("./types.zig").Literal;
-
+const Number = @import("./types.zig").Number;
 // -------------------------------
 // Expression node definitions
 // -------------------------------
 
 const TokenType = @import("token.zig").TokenType;
 
-pub const Map = struct {
-    key: []const u8,
-    value: *Expr,
-};
-
 pub const Expr = union(enum) {
-    literal: Literal,
+    literal: LiteralExpr,
     identifier: []const u8,
-    binary: Binary,
-    call: Call,
-    lambda: Lambda,
-    assign: Assign,
-    pipe: Pipe,
+    map: MapExpr,
+    list: ListExpr,
+    binary: BinaryExpr,
+    call: CallExpr,
+    lambda: LambdaExpr,
+    assign: AssignExpr,
+    pipe: PipeExpr,
     try_expr: TryExpr,
     match_expr: MatchExpr,
     or_expr: OrExpr,
@@ -27,15 +23,40 @@ pub const Expr = union(enum) {
     tap_expr: TapExpr,
 };
 
+pub const LiteralExpr = union(enum) {
+    number: Number,
+    string: []const u8,
+    boolean: bool,
+    none: void,
+};
+
+pub const MapExpr = struct {
+    pairs: []MapPair,
+};
+
+pub const MapPair = struct {
+    key: []const u8,
+    value: Expr,
+};
+
+pub const ListExpr = struct {
+    elements: []Expr,
+};
+
+pub const LambdaExpr = struct {
+    params: [][]const u8,
+    body: *Expr,
+};
+
 pub const OrExpr = struct {
     left: *Expr,
-    binding: [][]const u8,
+    // binding: [][]const u8, why is there a binding???
     right: *Expr,
 };
 
 pub const ThenExpr = struct {
     left: *Expr,
-    binding: [][]const u8,
+    // binding: [][]const u8, why is there a binding???
     right: *Expr,
 };
 
@@ -45,28 +66,23 @@ pub const TapExpr = struct {
     right: *Expr,
 };
 
-pub const Binary = struct {
+pub const BinaryExpr = struct {
     left: *Expr,
     operator: TokenType, // e.g. .PLUS, .OR
     right: *Expr,
 };
 
-pub const Call = struct {
+pub const CallExpr = struct {
     callee: *Expr, // e.g. @File.read
     args: []Expr,
 };
 
-pub const Lambda = struct {
-    params: [][]const u8,
-    body: *Expr,
-};
-
-pub const Assign = struct {
+pub const AssignExpr = struct {
     name: []const u8,
     value: *Expr,
 };
 
-pub const Pipe = struct {
+pub const PipeExpr = struct {
     left: *Expr,
     right: *Expr,
 };
@@ -122,20 +138,22 @@ pub fn printExpr(expr: Expr, depth: usize) void {
                 indent(depth);
                 std.debug.print("None\n", .{});
             },
-            .list => |items| {
-                indent(depth);
-                std.debug.print("List:\n", .{});
-                for (items) |item| printExpr(item, depth + 1);
-            },
-            .map => |pairs| {
-                indent(depth);
-                std.debug.print("Map:\n", .{});
-                for (pairs) |p| {
-                    indent(depth + 1);
-                    std.debug.print("{s} :\n", .{p.key});
-                    printExpr(p.value.*, depth + 2);
-                }
-            },
+        },
+
+        .list => |items| {
+            indent(depth);
+            std.debug.print("List:\n", .{});
+            for (items) |item| printExpr(item, depth + 1);
+        },
+
+        .map => |pairs| {
+            indent(depth);
+            std.debug.print("Map:\n", .{});
+            for (pairs) |p| {
+                indent(depth + 1);
+                std.debug.print("{s} :\n", .{p.key});
+                printExpr(p.value.*, depth + 2);
+            }
         },
 
         .assign => |a| {
@@ -242,11 +260,6 @@ pub fn printExpr(expr: Expr, depth: usize) void {
             std.debug.print("body:\n", .{});
             printExpr(l.body.*, depth + 2);
         },
-
-        else => {
-            indent(depth);
-            std.debug.print("(Unhandled node)\n", .{});
-        },
     }
 }
 
@@ -276,24 +289,22 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
                 indent(depth);
                 std.debug.print("None\n", .{});
             },
-            .list => |items| {
-                indent(depth);
-                std.debug.print("List:\n", .{});
-                for (items) |item| debugPrint(item, depth + 1);
-            },
-            .map => |map| {
-                indent(depth);
-                std.debug.print("Map:\n", .{});
-                for (map) |m| {
-                    indent(depth + 1);
-                    std.debug.print("{s} :\n", .{m.key});
-                    debugPrint(m.value.*, depth + 2);
-                }
-            },
-            else => {
-                indent(depth);
-                std.debug.print("Literal (complex)\n", .{});
-            },
+        },
+
+        .map => |map| {
+            indent(depth);
+            std.debug.print("Map:\n", .{});
+            for (map.pairs) |m| {
+                indent(depth + 1);
+                std.debug.print("{s} :\n", .{m.key});
+                debugPrint(m.value, depth + 2);
+            }
+        },
+
+        .list => |items| {
+            indent(depth);
+            std.debug.print("List:\n", .{});
+            for (items.elements) |item| debugPrint(item, depth + 1);
         },
 
         .identifier => {
@@ -425,7 +436,7 @@ pub fn debugPrint(expr: Expr, depth: usize) void {
             debugPrint(o.right.*, depth + 2);
         },
 
-        .and_expr => |a| {
+        .then_expr => |a| {
             indent(depth);
             std.debug.print("And\n", .{});
             indent(depth + 1);
