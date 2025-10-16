@@ -1,4 +1,5 @@
 const std = @import("std");
+const Literal = @import("./types.zig").Literal;
 
 // -------------------------------
 // Expression node definitions
@@ -6,32 +7,37 @@ const std = @import("std");
 
 const TokenType = @import("token.zig").TokenType;
 
-pub const Literal = union(enum) {
-    number: f64,
-    string: []const u8,
-    boolean: bool,
-    list: []Expr,
-    map: []Map,
-    result: ResultLiteral,
-    none: void,
-};
-
-pub const ResultLiteral = struct {
-    tag: ResultTag,
-    value: ?*Expr, // could be null if just `.ok` or `.err`
-};
-
-pub const ResultTag = enum {
-    ok,
-    err,
-};
-
 pub const Map = struct {
     key: []const u8,
     value: *Expr,
 };
 
-pub const Expr = union(enum) { literal: Literal, identifier: []const u8, binary: Binary, call: Call, lambda: Lambda, assign: Assign, pipe: Pipe, try_expr: TryExpr, match_expr: MatchExpr, or_expr: struct { left: *Expr, right: *Expr }, and_expr: struct { left: *Expr, right: *Expr }, tap_expr: TapExpr };
+pub const Expr = union(enum) {
+    literal: Literal,
+    identifier: []const u8,
+    binary: Binary,
+    call: Call,
+    lambda: Lambda,
+    assign: Assign,
+    pipe: Pipe,
+    try_expr: TryExpr,
+    match_expr: MatchExpr,
+    or_expr: OrExpr,
+    then_expr: ThenExpr,
+    tap_expr: TapExpr,
+};
+
+pub const OrExpr = struct {
+    left: *Expr,
+    binding: [][]const u8,
+    right: *Expr,
+};
+
+pub const ThenExpr = struct {
+    left: *Expr,
+    binding: [][]const u8,
+    right: *Expr,
+};
 
 pub const TapExpr = struct {
     left: *Expr,

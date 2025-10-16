@@ -1,95 +1,84 @@
 const std = @import("std");
 const Expr = @import("ast.zig").Expr;
-const Literals = @import("ast.zig").Literal;
+const Literal = @import("types.zig").Literal;
 
 pub const KeywordMap = std.StaticStringMap(TokenType).initComptime(.{ .{ "tap", .TAP }, .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "use", .USE }, .{ "true", .TRUE }, .{ "false", .FALSE }, .{ "none", .NONE }, .{ "and", .AND } });
 
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
-    literal: Literals,
     line: usize,
     column: usize,
+    literal: ?Literal = null,
 
     pub fn getNLiteral(self: Token) ?f64 {
-        return switch (self.literal) {
-            .number => |n| n,
-            else => null,
-        };
+        if (self.literal) |lit| {
+            if (lit == .number) return lit.number;
+        }
+        return null;
     }
 
     pub fn getSLiteral(self: Token) ?[]const u8 {
-        return switch (self.literal) {
-            .string => |s| s,
-            else => null,
-        };
-    }
-
-    pub fn getBLiteral(self: Token) ?bool {
-        return switch (self.literal) {
-            .boolean => |s| s,
-            else => null,
-        };
-    }
-
-    pub fn getVLiteral(self: Token) ?void {
-        return switch (self.literal) {
-            .none => |s| s,
-            else => null,
-        };
+        if (self.literal) |lit| {
+            if (lit == .string) return lit.string;
+        }
+        return null;
     }
 };
 
 pub const TokenType = enum {
-    // --- structural symbols ---
+    // Literals
+    NUMBER,
+    STRING,
+    BOOLEAN,
+    IDENTIFIER,
+
+    // Keywords
+    NONE,
+    MATCH,
+    TRY,
+    OR,
+    THEN,
+    TAP,
+    ANY,
+
+    // Operators
+    PLUS,
+    MINUS,
+    STAR,
+    SLASH,
+    EQUAL,
+    COLON_EQUAL, // NEW: :=
+    EQUAL_EQUAL,
+    BANG_EQUAL,
+    LESS,
+    LESS_EQUAL,
+    GREATER,
+    GREATER_EQUAL,
+    COLON,
+    COMMA,
+    DOT,
+    ARROW,
+    PIPE,
+
+    // Delimiters
     LEFT_PAREN,
     RIGHT_PAREN,
     LEFT_BRACKET,
     RIGHT_BRACKET,
     LEFT_BRACE,
     RIGHT_BRACE,
-    COMMA,
-    DOT,
-    COLON,
-    PLUS,
-    MINUS,
-    STAR,
-    SLASH,
-    CARET, // ^
-    ARROW, // ->
-    EQUAL,
-    EQUAL_EQUAL,
-    BANG,
-    BANG_EQUAL,
-    GREATER,
-    GREATER_EQUAL,
-    LESS,
-    LESS_EQUAL,
-    PIPE,
-    ESCAPE,
-    NEWLINE,
+
+    // Special markers
+    AT,
+    HASH,
     UNDERSCORE,
 
-    // --- literals ---
-    IDENTIFIER,
-    STRING,
-    NUMBER,
-    TRUE,
-    FALSE,
-    NONE,
+    // Indentation and whitespace
+    INDENT, // NEW: logical indent increase
+    DEDENT, // NEW: logical indent decrease
+    NEWLINE,
 
-    // --- prefixes ---
-    AT, // @   monad
-    HASH, // #   intrinsic
-
-    // --- keywords ---
-    MATCH,
-    TRY,
-    OR,
-    USE,
-    AND,
-    TAP,
-
-    // --- other ---
+    // End of file
     EOF,
 };

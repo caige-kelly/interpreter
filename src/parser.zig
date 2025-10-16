@@ -384,10 +384,29 @@ pub const Parser = struct {
         const token = self.advance();
 
         return switch (token.type) {
-            .NUMBER => Ast.Expr{ .literal = .{ .number = token.getNLiteral().? } },
+            .NUMBER => {
+                if (token.literal) |lit| {
+                    switch (lit) {
+                        .number => |num| {
+                            switch (num) {
+                                .int => |i| return Ast.Expr{ .literal = .{ .number = .{ .int = i } } },
+                                .float => |f| return Ast.Expr{ .literal = .{ .number = .{ .float = f } } },
+                            }
+                        },
+                        else => {},
+                    }
+                }
+                return Ast.Expr{ .literal = .{ .number = .{ .int = 0 } } };
+            },
             .STRING => Ast.Expr{ .literal = .{ .string = token.getSLiteral().? } },
-            .TRUE => Ast.Expr{ .literal = .{ .boolean = true } },
-            .FALSE => Ast.Expr{ .literal = .{ .boolean = false } },
+            .BOOLEAN => {
+                if (token.literal) |lit| {
+                    if (lit == .boolean) {
+                        return Ast.Expr{ .literal = .{ .boolean = lit.boolean } };
+                    }
+                }
+                return Ast.Expr{ .literal = .{ .boolean = false } };
+            },
             .NONE => Ast.Expr{ .literal = .{ .none = {} } },
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
             .UNDERSCORE => Ast.Expr{ .identifier = token.lexeme },
@@ -621,6 +640,48 @@ pub const Parser = struct {
             return seen_ident and t == .ARROW;
         }
         return false;
+    }
+
+    fn scanNumber(self: *ParseError) void {
+        const start = self.current;
+        const start_col = self.column;
+
+        while (!self.isAtEnd() and self.isDigit(self.peek())) {
+            self.advance();
+        }
+
+        if (!self.isAtEnd() and self.peek() == '.' and self.isDigit(self.peekNext())) {
+            self.advance();
+            while (!self.isAtEnd() and self.isDigit(self.peek())) {
+                self.advance();
+            }
+        }
+
+        const lexeme = self.source[start..self.current];
+
+        // Try to parse as int first
+        if (std.mem.indexOf(u8, lexeme, ".") == null) {
+            if (std.fmt.parseInt(i64, lexeme, 10)) |int_val| {
+                self.tokens.append(.{
+                    .type = .NUMBER,
+                    .lexeme = lexeme,
+                    .line = self.line,
+                    .column = start_col,
+                    .literal = .{ .number = .{ .int = int_val } },
+                }) catch unreachable;
+                return;
+            } else |_| {}
+        }
+
+        // Parse as float
+        const float_val = std.fmt.parseFloat(f64, lexeme) catch 0;
+        self.tokens.append(.{
+            .type = .NUMBER,
+            .lexeme = lexeme,
+            .line = self.line,
+            .column = start_col,
+            .literal = .{ .number = .{ .float = float_val } },
+        }) catch unreachable;
     }
 
     fn check(self: *Parser, t: TokenType) bool {

@@ -18,26 +18,90 @@ pub const Lexer = struct {
     column: usize = 0,
     start_column: usize = 0,
 
-    pub fn init(source: []const u8, alloc: std.mem.Allocator) !Lexer {
+    // Indentation tracking
+    indent_stack: std.ArrayList(usize) = undefined,
+    pending_dedents: usize = 0,
+    at_line_start: bool = true,
+
+    pub fn init(source: []const u8, allocator: std.mem.Allocator) Lexer {
         return .{
             .source = source,
-            .allocator = alloc,
-            .tokens = try std.ArrayList(Token).initCapacity(alloc, initial_token_capacity),
+            .tokens = std.ArrayList(Token).init(allocator),
+            .allocator = allocator,
+            .indent_stack = std.ArrayList(usize).init(allocator),
         };
     }
 
-    pub fn scanTokens(self: *Lexer) ![]Token {
+    pub fn scanTokens(self: *Lexer) ![]const Token {
+        // Initialize indent stack with 0
+        try self.indent_stack.append(0);
+
         while (!self.isAtEnd()) {
-            self.start = self.current;
-            self.start_column = self.column;
-            try self.scanToken();
+            // Handle indentation at line start
+            if (self.at_line_start and !self.isAtEnd()) {
+                self.handleIndentation();
+                self.at_line_start = false;
+            }
+
+            if (self.isAtEnd()) break;
+
+            self.scanToken();
         }
 
-        self.start = self.current;
-        self.start_column = self.column;
-        try self.makeToken(.EOF, .none);
+        // Emit remaining dedents at EOF
+        while (self.indent_stack.items.len > 1) {
+            _ = self.indent_stack.pop();
+            try self.addToken(.DEDENT, "");
+        }
 
+        try self.addToken(.EOF, "");
         return self.tokens.items;
+    }
+
+    fn handleIndentation(self: *Lexer) void {
+        var indent: usize = 0;
+
+        // Count leading whitespace (spaces only, not tabs for simplicity)
+        while (!self.isAtEnd() and (self.peek() == ' ' or self.peek() == '\t')) {
+            if (self.peek() == ' ') {
+                indent += 1;
+            } else {
+                indent += 4; // Tab = 4 spaces
+            }
+            self.advance();
+        }
+
+        // Skip blank lines and comments
+        if (self.isAtEnd() or self.peek() == '\n' or self.peek() == '#') {
+            while (!self.isAtEnd() and self.peek() != '\n') {
+                self.advance();
+            }
+            return;
+        }
+
+        const current_indent = self.indent_stack.items[self.indent_stack.items.len - 1];
+
+        if (indent > current_indent) {
+            // Indent increased
+            self.indent_stack.append(indent) catch unreachable;
+            self.tokens.append(.{
+                .type = .INDENT,
+                .lexeme = "",
+                .line = self.line,
+                .column = self.column,
+            }) catch unreachable;
+        } else if (indent < current_indent) {
+            // Dedent: may need multiple DEDENT tokens
+            while (self.indent_stack.items.len > 1 and self.indent_stack.items[self.indent_stack.items.len - 1] > indent) {
+                _ = self.indent_stack.pop();
+                self.tokens.append(.{
+                    .type = .DEDENT,
+                    .lexeme = "",
+                    .line = self.line,
+                    .column = self.column,
+                }) catch unreachable;
+            }
+        }
     }
 
     pub fn scanToken(self: *Lexer) !void {
@@ -78,7 +142,8 @@ pub const Lexer = struct {
             '\t' => return,
             '\n' => return try self.newLine(),
             else => if (isNumber(c)) {
-                return self.makeToken(self.numberLiteral(), .{ .number = try std.fmt.parseFloat(f64, self.source[self.start..self.current]) });
+                const literal = try self.scanNumber();
+                return self.makeToken(.NUMBER, literal);
             } else if (isAlpha(c)) {
                 return self.makeToken(self.identifier(), .none);
             } else return self.undefinedLexeme(),
@@ -112,6 +177,49 @@ pub const Lexer = struct {
         return KeywordMap.get(word) orelse .IDENTIFIER;
     }
 
+    fn scanIdentifier(self: *Lexer) void {
+        const start = self.pos;
+        const start_col = self.column;
+
+        while (!self.isAtEnd() and self.isAlphaNumeric(self.peek())) {
+            self.advance();
+        }
+
+        const lexeme = self.source[start..self.pos];
+
+        // Check for boolean literals
+        if (std.mem.eql(u8, lexeme, "true")) {
+            self.tokens.append(.{
+                .type = .BOOLEAN,
+                .lexeme = lexeme,
+                .line = self.line,
+                .column = start_col,
+                .literal = .{ .boolean = true },
+            }) catch unreachable;
+            return;
+        }
+        if (std.mem.eql(u8, lexeme, "false")) {
+            self.tokens.append(.{
+                .type = .BOOLEAN,
+                .lexeme = lexeme,
+                .line = self.line,
+                .column = start_col,
+                .literal = .{ .boolean = false },
+            }) catch unreachable;
+            return;
+        }
+
+        // Otherwise it's a keyword or identifier
+        const token_type = self.getKeywordType(lexeme);
+
+        self.tokens.append(.{
+            .type = token_type,
+            .lexeme = lexeme,
+            .line = self.line,
+            .column = start_col,
+        }) catch unreachable;
+    }
+
     fn isAlpha(token: u8) bool {
         return std.ascii.isAlphabetic(token) or token == '_';
     }
@@ -120,15 +228,32 @@ pub const Lexer = struct {
         return std.ascii.isDigit(token);
     }
 
-    fn numberLiteral(self: *Lexer) TokenType {
-        while (isNumber(self.peek())) _ = self.advance();
+    fn scanNumber(self: *Lexer) !Literal {
+        const start = self.start;
 
-        if (self.peek() == '.' and isNumber(self.peekNext())) {
-            _ = self.advance();
-            while (isNumber(self.peek())) _ = self.advance();
+        while (!self.isAtEnd() and isNumber(self.peek())) {
+            self.advance();
         }
 
-        return .NUMBER;
+        if (!self.isAtEnd() and self.peek() == '.' and isNumber(self.peekNext())) {
+            self.advance();
+            while (!self.isAtEnd() and isNumber(self.peek())) {
+                self.advance();
+            }
+        }
+
+        const lexeme = self.source[start..self.current];
+
+        // Try int first
+        if (std.mem.indexOf(u8, lexeme, ".") == null) {
+            if (std.fmt.parseInt(i64, lexeme, 10)) |int_val| {
+                return .{ .number = .{ .int = int_val } };
+            } else |_| {}
+        }
+
+        // Parse as float
+        const float_val = try std.fmt.parseFloat(f64, lexeme);
+        return .{ .number = .{ .float = float_val } };
     }
 
     fn stringLiteral(self: *Lexer) ![]u8 {
