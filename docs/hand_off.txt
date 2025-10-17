@@ -1,0 +1,500 @@
+# Ripple Language - Project Handoff (Updated)
+
+## Project Status
+- **Lexer:** ✅ Complete and working
+- **Parser:** ⚠️ Partially complete (assignments work, need more expression types)
+- **Evaluator:** ❌ Not started (NEXT PRIORITY)
+- **Type Checker:** ❌ Not started
+- **VM with Supervision:** ❌ Not started
+
+## What This Is
+Ripple is a functional scripting language designed to be embedded in infrastructure/ops tools.
+
+### Core Purpose
+**"A language for infrastructure code: Lua + Elixir's reliability model + modern error handling"**
+
+- Embedded scripting (like Lua)
+- Supervisor model for process management and restarts
+- Strong typing with type inference
+- Effect tags (functions declare what they do: `[io]`, `[net]`, etc.)
+- Result types for explicit error handling
+- No if/else (match only)
+- No shadowing (one binding per name)
+- Configurable runtime (logging, memory limits, timeouts)
+
+### Philosophy
+**"Make bugs impossible, not syntax pretty."**
+- Explicit > Clever
+- Effects matter (know what functions do)
+- Errors first (design around preventing mistakes)
+- Types help (catch bugs at compile time)
+- Keep it small
+
+---
+
+## Language Design (Locked In)
+
+### Core Features
+1. **Everything is a lambda** — No `fn` keyword. `add := a, b -> a + b`
+2. **Immutability, no shadowing** — Only `:=` for binding. One name = one binding.
+3. **Type inference** — Static types, inferred. Optional explicit annotations.
+4. **Unified `number` type** — All numbers are `f64`. No int/float distinction (for prototype).
+5. **`@` and `#` caller-driven semantics:**
+   - `@` exposes Result explicitly: `ok(value, meta)` or `err(msg, meta)`
+   - `#` collapses to `value | none`
+6. **Operators:**
+   - `|>` pipeline
+   - `or` (fallback if left is none)
+   - `then` (sequence if left not none)
+   - `tap` (side effects without changing value)
+   - `match` (pattern matching, ONLY branching construct)
+7. **No if/else** — `match` handles all branching
+8. **Indentation-based blocks** — Python style, strict continuation rules
+9. **Effect tags on functions** — `[io]`, `[net]`, `[fx]` declare side effects
+10. **Supervisor model** — Built-in process management, restarts, monitoring (future)
+
+### Assignment Forms (IMPLEMENTED)
+
+**Two forms:**
+
+1. **Inferred type:** `x := 10`
+   - Uses `:=` operator
+   - Type is inferred by type checker (future)
+   - Parser stores `type_annotation = null`
+
+2. **Explicit type:** `x: number = 10`
+   - Uses `: type =` syntax
+   - Type is validated by type checker (future)
+   - Parser stores `type_annotation = Type.number`
+
+**Invalid:**
+- `x = 10` — ERROR: must use `:=` or `: type =`
+
+### Lambda Syntax (DESIGN ONLY, NOT IMPLEMENTED)
+
+```ripple
+# Single param
+double := |x| -> x * 2
+
+# Multiple params
+add := |a, b| -> a + b
+
+# With type annotations
+process := |data: string| -> data |> transform
+
+# Multi-line body (indentation-based)
+complex := |x| ->
+  step1 := transform(x)
+  step2 := validate(step1)
+  step2
+```
+
+**Key rules:**
+- Params wrapped in `|...|` (pipe delimiters)
+- `->` separates params from body
+- Multi-line bodies require indent after `->`
+- Last expression is implicit return
+
+### Example Syntax (Partially Working)
+
+```ripple
+# ✅ WORKS NOW (assignments)
+x := 10
+name := "alice"
+active: boolean = true
+
+# ❌ NOT IMPLEMENTED YET (but designed)
+# Binary operators
+sum := x + y
+
+# Pipelines
+result := data |> clean |> validate
+
+# Lambdas
+double := |x| -> x * 2
+
+# Match expressions
+status := code |> match ->
+  200 -> "ok"
+  404 -> "not found"
+  any -> "error"
+
+# Function calls
+result := process(data, config)
+```
+
+---
+
+## File Structure (Current)
+
+```
+src/
+  main.zig        — Entry point, orchestration
+  token.zig       — Token, TokenType, Literal definitions
+  lexer.zig       — Lexer (complete)
+  types.zig       — Type enum (separate from Literal)
+  ast.zig         — AST node definitions
+  parser.zig      — Parser (assignments complete, needs more)
+  evaluator.zig   — [TODO] Evaluate AST → Values
+  type_checker.zig — [TODO] Type checking pass
+  vm.zig          — [TODO] VM with bytecode execution
+  supervisor.zig  — [TODO] Process supervision
+```
+
+---
+
+## Lexer (Complete)
+
+### What It Does
+- Tokenizes Ripple source code
+- Tracks indentation (emits `INDENT`/`DEDENT` tokens)
+- Handles `:=`, `:`, `=` correctly
+- Numbers stored as `f64`
+- Comments (`//` and `#`) silently consumed
+
+### Key Tokens
+- `COLON_EQUAL` (`:=`) — Inferred assignment
+- `COLON` (`:`) — Type annotation start
+- `EQUAL` (`=`) — Explicit assignment value
+- `PIPE` (`|`) — Lambda param delimiter (future)
+- `PIPELINE` (`|>`) — Pipeline operator (future)
+- `ARROW` (`->`) — Lambda body separator (future)
+- `INDENT`/`DEDENT` — Block structure
+
+### Recent Changes
+- `Literal.number` is now just `f64`, not a union
+- NEWLINE tokens have empty lexeme for clean display
+- Indent stack properly initialized to `[0]`
+
+---
+
+## Parser (Partially Complete)
+
+### What Works Now ✅
+
+**Assignments:**
+```ripple
+x := 10              # Inferred
+name: string = "alice"  # Explicit
+```
+
+**Literals and identifiers:**
+- Numbers, strings, booleans, none
+- Identifiers
+
+### What's Missing ❌
+
+- Binary operators (`+`, `-`, `*`, `/`, `==`, etc.)
+- Pipeline operators (`|>`, `or`, `then`)
+- Lambdas (`|params| -> body`)
+- Match expressions
+- Function calls
+- Collections (`[1, 2, 3]`, `{ key: value }`)
+
+### Parser Structure (Precedence Chain)
+
+```
+parse()
+  → parseAssignment()  ✅ DONE
+    → parseLambda()    ❌ TODO
+      → parsePipeline() ❌ TODO
+        → parseBinary() ❌ TODO
+          → parseCall() ❌ TODO
+            → parsePrimary() ✅ DONE
+```
+
+### Key Design Decisions
+
+1. **Type checking happens AFTER parsing**
+   - Parser builds AST with `type_annotation: ?Type`
+   - Type checker validates types in separate pass
+   - Don't validate types in parser
+
+2. **Everything calls down to `parsePrimary()` first**
+   - Recursive descent: always go to bottom, build back up
+   - Each level checks "is next token my operator?"
+   - If yes: build node, if no: return what came from below
+
+3. **Indentation for continuation**
+   - Newline ends expression UNLESS next line is indented
+   - Strict rule (like Python functions)
+
+4. **Match is a primary expression**
+   - Parsed in `parsePrimary()`, not a precedence level
+   - It's a value, not a statement
+
+---
+
+## AST Structure (Current)
+
+```zig
+pub const Program = struct {
+    expressions: []Expr,
+};
+
+pub const Expr = union(enum) {
+    literal: Literal,
+    identifier: []const u8,
+    assignment: AssignExpr,
+    // TODO: binary, pipeline, lambda, match, call, etc.
+};
+
+pub const AssignExpr = struct {
+    name: []const u8,
+    type: ?Type,  // null for inferred, Type.X for explicit
+    value: *Expr,
+};
+
+pub const Literal = union(enum) {
+    number: f64,
+    string: []const u8,
+    boolean: bool,
+    none,
+};
+```
+
+### Type System (Separate from Literal)
+
+```zig
+pub const Type = enum {
+    number,
+    string,
+    boolean,
+    none,
+    unknown,
+    // Future: list, map, function, custom types
+};
+```
+
+**Why separate?**
+- `Literal` = values in the program
+- `Type` = metadata describing what kind of value something is
+
+---
+
+## Next Steps: Evaluator (PRIORITY)
+
+### What It Needs to Do
+
+1. **Execute assignments**
+   - Maintain a symbol table (name → value mapping)
+   - Store values from right side
+   - Look up values when identifiers are used
+
+2. **Evaluate expressions**
+   - Literals return their value
+   - Identifiers look up in symbol table
+   - (Future: binary ops, calls, etc.)
+
+3. **Return final values**
+   - Each expression evaluates to a value
+   - Program returns last expression's value (or none)
+
+### Design Approach
+
+**Simple tree-walk interpreter for prototype:**
+
+```zig
+pub const Evaluator = struct {
+    allocator: std.mem.Allocator,
+    symbols: std.StringHashMap(Value),  // Symbol table
+    
+    pub fn evaluate(self: *Evaluator, program: Ast.Program) !Value {
+        var last_value: Value = .none;
+        
+        for (program.expressions) |expr| {
+            last_value = try self.evalExpr(expr);
+        }
+        
+        return last_value;
+    }
+    
+    fn evalExpr(self: *Evaluator, expr: Ast.Expr) !Value {
+        return switch (expr) {
+            .literal => |lit| Value.fromLiteral(lit),
+            .identifier => |name| try self.symbols.get(name),
+            .assignment => |a| try self.evalAssignment(a),
+            // TODO: other expression types
+        };
+    }
+};
+```
+
+### Value Representation
+
+```zig
+pub const Value = union(enum) {
+    number: f64,
+    string: []const u8,
+    boolean: bool,
+    none,
+    // Future: function, list, map
+};
+```
+
+Similar to `Literal`, but used at runtime instead of parse time.
+
+---
+
+## Test Script (Reference)
+
+Start with simple assignments:
+
+```ripple
+x := 10
+y := 20
+sum := x + y  # Won't work yet (no binary ops)
+
+name := "alice"
+greeting := "Hello, " + name  # Won't work yet
+
+# For now, just test:
+x := 10
+y := 20
+name := "alice"
+active: boolean = true
+```
+
+---
+
+## Learning Approach (Important)
+
+### How to Work with Claude
+
+**You are learning to understand, not just receiving code.**
+
+When continuing this project:
+1. **Ask questions first, not for solutions**
+2. **Defend your design choices**
+3. **Write pseudocode first**
+4. **Understand the why**
+5. **Debug your own code**
+
+### What Claude Will Do
+- Ask you questions until you understand the problem
+- Point you to resources, not just solutions
+- Explain tradeoffs (why X vs. Y)
+- Make you defend your architecture
+- Push back on shortcuts
+- Refuse to write code first (ask you to design first)
+- Have you write first drafts, then iterate together
+
+### Red Flags (Stop and Reconsider)
+- Copying code without understanding it
+- Using patterns because they "just work"
+- Can't explain a design decision
+- Taking shortcuts to "just get it done"
+
+**This is slower than receiving code. That's intentional. You're building deep knowledge.**
+
+---
+
+## Design Decisions Made
+
+### 1. **No Shadowing**
+Variables can't be rebound. One name = one value.
+
+**Why:** Clarity. No confusion about which `x` you're referring to.
+
+### 2. **Match Only (No If/Else)**
+All branching through `match` expressions.
+
+**Why:** Forces exhaustive handling. No "forgot the else branch" bugs.
+
+### 3. **Parentheses for Lambda Args**
+Decided against pipes `|x|` due to visual conflict with `|>`.
+
+**Wait, this was reversed:** Actually kept pipes `|x|` for lambda params.
+
+**Why:** More explicit than bare identifiers. Rust proved the pattern works.
+
+### 4. **Strict Indentation for Continuation**
+Newline after `->` requires indent for multi-line lambda body.
+
+**Why:** Consistent with Python. Clear visual structure.
+
+### 5. **Unified `number` Type**
+All numbers are `f64` (for prototype).
+
+**Why:** Simpler to implement. Can add int/float distinction later.
+
+### 6. **Type Inference with Optional Annotations**
+`:=` infers, `: type =` is explicit.
+
+**Why:** Convenience + safety. Most code uses inference, complex cases can be explicit.
+
+### 7. **Parser Doesn't Validate Types**
+Type checking is a separate pass.
+
+**Why:** Parser builds structure. Type checker validates semantics. Clean separation.
+
+---
+
+## Lessons Learned
+
+1. **Don't speculate** — Only implement what's in the test script
+2. **Design before code** — Understand the problem, then implement
+3. **Recursive descent is simpler than it looks** — Each level: call down, check operator, build or return
+4. **Indentation is hard but doable** — Track with a stack, emit INDENT/DEDENT tokens
+5. **Type vs Literal confusion** — Keep them separate from the start
+6. **Parser complexity vs Lexer complexity** — Prefer simple lexer, complex parser
+7. **Don't optimize prematurely** — Get it working, then make it fast
+
+---
+
+## Immediate Next Chat
+
+Start with: "I'm continuing the Ripple language project. I have a working lexer and parser for assignments. Now I need to build an evaluator that can execute assignments and evaluate expressions."
+
+Paste:
+- This handoff doc
+- Current `parser.zig`, `ast.zig`, `types.zig`
+- **Explicitly state: "I want to learn and understand everything. Make me think. Ask me questions."**
+
+---
+
+## Questions to Ask Claude
+
+- "How should the evaluator maintain state (symbol table)?"
+- "What's the difference between tree-walk interpreter and bytecode VM?"
+- "Should the evaluator validate types, or leave that to a type checker?"
+- "How do I handle expressions that reference undefined variables?"
+- "What should the Value type look like?"
+
+---
+
+## Current Parser Quality: 9/10
+
+**What's good:**
+- Clean structure
+- No duplicate code
+- Good error messages
+- Proper helpers (`skipNewlines`, `parseTypeName`)
+- Works correctly for assignments
+
+**What could improve:**
+- More expression types (next phase)
+- Error recovery (continue parsing after error)
+- Better error context (show source line)
+
+---
+
+## The Real Goal
+
+Not "build the next Python." Not "replace Bash."
+
+**Goal: Build a language for infrastructure code that's safer, clearer, and more reliable than current alternatives.**
+
+Success means:
+- DevOps engineers can read and understand immediately
+- Explicit error handling and effect tags
+- Runs under supervision with automatic restarts
+- Integrates cleanly with logging/monitoring systems
+
+Even if only a few teams use it, that's a win.
+
+---
+
+Good luck. The lexer and parser foundation is solid. Now make it execute code.
+
+**Remember: Learn by doing, not by copying. Ask questions. Defend your choices. Understand the why.**

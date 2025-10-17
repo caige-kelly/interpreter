@@ -4,28 +4,21 @@ const Literal = @import("ast.zig").LiteralExpr;
 
 const KeywordKV = struct { []const u8, TokenType };
 
-pub const KeywordMap = std.StaticStringMap(TokenType).initComptime([_]KeywordKV{.{ "tap", .TAP }, .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "none", .NONE }, .{ "then", .THEN }});
+pub const KeywordMap = std.StaticStringMap(TokenType).initComptime([_]KeywordKV{
+    .{ "tap", .TAP },
+    .{ "match", .MATCH }, 
+    .{ "try", .TRY }, 
+    .{ "or", .OR }, 
+    .{ "none", .NONE }, 
+    .{ "then", .THEN }
+});
 
 pub const Token = struct {
     type: TokenType,
     lexeme: []const u8,
     line: usize,
     column: usize,
-    literal: ?Literal = null,
-
-    pub fn getNLiteral(self: Token) ?f64 {
-        if (self.literal) |lit| {
-            if (lit == .number) return lit.number;
-        }
-        return null;
-    }
-
-    pub fn getSLiteral(self: Token) ?[]const u8 {
-        if (self.literal) |lit| {
-            if (lit == .string) return lit.string;
-        }
-        return null;
-    }
+    literal: ?Literal = null
 };
 
 pub const TokenType = enum {

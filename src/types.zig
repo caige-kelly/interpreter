@@ -1,9 +1,12 @@
 const std = @import("std");
 const Lambda = @import("ast.zig").LambdaExpr;
 
-pub const Number = union(enum) {
-    int: i64,
-    float: f64,
+pub const Type = enum {
+    number,
+    string,
+    boolean,
+    none,
+    unknown
 };
 
 // Result is separate—it's a runtime value, not a literal
@@ -13,7 +16,7 @@ pub const Result = struct {
 };
 
 pub const Value = union(enum) {
-    number: Number,
+    number: f64,
     string: []const u8,
     boolean: bool,
     none: void,

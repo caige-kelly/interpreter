@@ -24,20 +24,19 @@ pub const Lexer = struct {
     at_line_start: bool = true,
 
     pub fn init(source: []const u8, allocator: std.mem.Allocator) !Lexer {
+        var stack = try std.ArrayList(usize).initCapacity(allocator, 0);
+        try stack.append(allocator, 0);
+
         return .{
             .source = source,
             .tokens =  try std.ArrayList(Token).initCapacity(allocator, 0),
             .allocator = allocator,
-            .indent_stack = try std.ArrayList(usize).initCapacity(allocator, 0),
+            .indent_stack = stack,
         };
     }
 
-    pub fn scanTokens(self: *Lexer) ![]const Token {
-        // Initialize indent stack with 0
-        try self.indent_stack.append(self.allocator,0);
-
+    pub fn scanTokens(self: *Lexer) ![]Token {
         while (!self.isAtEnd()) {
-            // Handle indentation at line start
             if (self.at_line_start and !self.isAtEnd()) {
                 try self.handleIndentation();
                 self.at_line_start = false;
@@ -45,16 +44,18 @@ pub const Lexer = struct {
 
             if (self.isAtEnd()) break;
 
+            // Reset start position for next token
+            self.start = self.current;
+            self.start_column = self.column;
+
             _ = try self.scanToken();
         }
 
-        // Emit remaining dedents at EOF
-        while (self.indent_stack.items.len > 1) {
-            _ = self.indent_stack.pop();
-            try self.makeToken(.DEDENT, .none);
-        }
-
+        // Add EOF token
+        self.start = self.current;
+        self.start_column = self.column;
         try self.makeToken(.EOF, .none);
+
         return self.tokens.items;
     }
 
@@ -72,7 +73,7 @@ pub const Lexer = struct {
         }
 
         // Skip blank lines and comments
-        if (self.isAtEnd() or self.peek() == '\n' or self.peek() == '#') {
+        if (self.isAtEnd() or self.peek() == '\n' or self.peek() == '/') {
             while (!self.isAtEnd() and self.peek() != '\n') {
                 _ = self.advance();
             }
@@ -230,8 +231,6 @@ pub const Lexer = struct {
     }
 
     fn scanNumber(self: *Lexer) !Literal {
-        const start = self.start;
-
         while (!self.isAtEnd() and isNumber(self.peek())) {
             _ = self.advance();
         }
@@ -243,18 +242,11 @@ pub const Lexer = struct {
             }
         }
 
-        const lexeme = self.source[start..self.current];
-
-        // Try int first
-        if (std.mem.indexOf(u8, lexeme, ".") == null) {
-            if (std.fmt.parseInt(i64, lexeme, 10)) |int_val| {
-                return .{ .number = .{ .int = int_val } };
-            } else |_| {}
-        }
+        const lexeme = self.source[self.start..self.current];
 
         // Parse as float
         const float_val = try std.fmt.parseFloat(f64, lexeme);
-        return .{ .number = .{ .float = float_val } };
+        return .{ .number = float_val };
     }
 
     fn stringLiteral(self: *Lexer) ![]u8 {
@@ -336,9 +328,16 @@ pub const Lexer = struct {
             else => {},
         }
 
+        const no_lexeme_tokens = [_]TokenType{ .NEWLINE, .EOF, .INDENT, .DEDENT };
+
+        const lexeme = if (std.mem.indexOfScalar(TokenType, &no_lexeme_tokens, t) != null)
+            ""
+        else
+            self.source[self.start..self.current];
+
         const token = Token{
             .type = t,
-            .lexeme = self.source[self.start..self.current],
+            .lexeme = lexeme,
             .literal = lit,
             .line = self.line,
             .column = self.start_column,

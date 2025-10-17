@@ -1,10 +1,10 @@
 const std = @import("std");
-const Number = @import("./types.zig").Number;
-// -------------------------------
-// Expression node definitions
-// -------------------------------
-
 const TokenType = @import("token.zig").TokenType;
+const Type = @import("types.zig").Type;
+
+pub const Program = struct {
+    expressions: []Expr,
+};
 
 pub const Expr = union(enum) {
     literal: LiteralExpr,
@@ -14,7 +14,7 @@ pub const Expr = union(enum) {
     binary: BinaryExpr,
     call: CallExpr,
     lambda: LambdaExpr,
-    assign: AssignExpr,
+    assignment: AssignExpr,
     pipe: PipeExpr,
     try_expr: TryExpr,
     match_expr: MatchExpr,
@@ -24,7 +24,7 @@ pub const Expr = union(enum) {
 };
 
 pub const LiteralExpr = union(enum) {
-    number: Number,
+    number: f64,
     string: []const u8,
     boolean: bool,
     none: void,
@@ -79,6 +79,7 @@ pub const CallExpr = struct {
 
 pub const AssignExpr = struct {
     name: []const u8,
+    type: ?Type,
     value: *Expr,
 };
 
