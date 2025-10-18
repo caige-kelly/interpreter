@@ -3,7 +3,7 @@ const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Ast = @import("ast.zig");
 const errors = @import("error.zig");
-const Type = @import("types.zig").Type;
+const Type = @import("ast.zig").Type;
 
 pub const ParseError = error{ UnexpectedToken, InvalidAssignmentTarget, ExpectedToken, NoMatchFound, OutOfMemory };
 
@@ -27,6 +27,7 @@ pub const Parser = struct {
     // -------------------------------------------------------------
     pub fn parse(self: *Parser) !Ast.Program {
         var exprs = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 16);
+        defer _ = exprs.deinit(self.allocator);
 
         while (!self.isAtEnd()) {
             // Skip newlines and whitespace
@@ -37,7 +38,7 @@ pub const Parser = struct {
             try exprs.append(self.allocator, expr);
         }
 
-        return Ast.Program{ .expressions = try exprs.toOwnedSlice(self.allocator) };
+        return Ast.Program{ .expressions = try exprs.toOwnedSlice(self.allocator), .allocator = self.allocator };
     }
 
     // -------------------------------------------------------------

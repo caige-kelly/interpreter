@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     // This runs all `test {}` blocks reachable from src/main.zig
     const tests = b.addTest(.{
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/evaluator.zig"),
+            .root_source_file = b.path("src/all_tests.zig"),
             .target = target,
             .optimize = optimize,
         }),

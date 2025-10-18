@@ -33,7 +33,7 @@ pub const Evaluator = struct {
 
     pub fn deinit(self: *Evaluator) void {
         self.globals.deinit();
-        self.results.deinit();
+        self.results.deinit(self.allocator);
     }
 
     // Functions that evaluate different AST nodes
@@ -93,13 +93,14 @@ const testing = std.testing;
 test "evaluate literal number" {
     const allocator = testing.allocator;
 
-    var lexer = @import("lexer.zig").Lexer.init("x := 42");
-    const tokens = try lexer.tokenize(allocator);
+    var lexer = try @import("lexer.zig").Lexer.init("x := 42", allocator);
+    defer lexer.deinit();
+    const tokens = try lexer.scanTokens();
     defer allocator.free(tokens);
 
     var parser = @import("parser.zig").Parser.init(tokens, allocator);
-    const program = try parser.parse();
-    defer parser.deinit();
+    var program = try parser.parse();
+    defer program.deinit(); // ← Add this!
 
     var evaluator = try Evaluator.init(allocator, .{});
     defer evaluator.deinit();
@@ -111,13 +112,14 @@ test "evaluate literal number" {
 test "undefined variable error" {
     const allocator = testing.allocator;
 
-    var lexer = @import("lexer.zig").Lexer.init("y := unknown");
-    const tokens = try lexer.tokenize(allocator);
+    var lexer = try @import("lexer.zig").Lexer.init("y := unknown", allocator);
+    defer lexer.deinit();
+    const tokens = try lexer.scanTokens();
     defer allocator.free(tokens);
 
     var parser = @import("parser.zig").Parser.init(tokens, allocator);
-    const program = try parser.parse();
-    defer parser.deinit();
+    var program = try parser.parse();
+    defer program.deinit();
 
     var evaluator = try Evaluator.init(allocator, .{});
     defer evaluator.deinit();

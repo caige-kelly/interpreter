@@ -35,6 +35,10 @@ pub const Lexer = struct {
         };
     }
 
+    pub fn deinit(self: *Lexer) void {
+        self.indent_stack.deinit(self.allocator);
+    }
+
     pub fn scanTokens(self: *Lexer) ![]Token {
         while (!self.isAtEnd()) {
             if (self.at_line_start and !self.isAtEnd()) {

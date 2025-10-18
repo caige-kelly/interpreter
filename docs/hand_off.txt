@@ -2,10 +2,12 @@
 
 ## Project Status
 - **Lexer:** ✅ Complete and working
-- **Parser:** ⚠️ Partially complete (assignments work, need more expression types)
-- **Evaluator:** ❌ Not started (NEXT PRIORITY)
+- **Parser:** ✅ Complete for assignments (MVP)
+- **Evaluator:** ✅ Complete with trace collection (MVP)
+- **Tests:** ✅ Inline with source code (Zig style)
 - **Type Checker:** ❌ Not started
-- **VM with Supervision:** ❌ Not started
+- **Supervisor:** ❌ Not started (NEXT PRIORITY)
+- **VM with Bytecode:** ❌ Not started (future)
 
 ## What This Is
 Ripple is a functional scripting language designed to be embedded in infrastructure/ops tools.
@@ -35,7 +37,7 @@ Ripple is a functional scripting language designed to be embedded in infrastruct
 ## Language Design (Locked In)
 
 ### Core Features
-1. **Everything is a lambda** — No `fn` keyword. `add := a, b -> a + b`
+1. **Everything is a lambda** — No `fn` keyword. `add := |a, b| -> a + b`
 2. **Immutability, no shadowing** — Only `:=` for binding. One name = one binding.
 3. **Type inference** — Static types, inferred. Optional explicit annotations.
 4. **Unified `number` type** — All numbers are `f64`. No int/float distinction (for prototype).
@@ -51,9 +53,9 @@ Ripple is a functional scripting language designed to be embedded in infrastruct
 7. **No if/else** — `match` handles all branching
 8. **Indentation-based blocks** — Python style, strict continuation rules
 9. **Effect tags on functions** — `[io]`, `[net]`, `[fx]` declare side effects
-10. **Supervisor model** — Built-in process management, restarts, monitoring (future)
+10. **Supervisor model** — Built-in process management, restarts, monitoring
 
-### Assignment Forms (IMPLEMENTED)
+### Assignment Forms (IMPLEMENTED ✅)
 
 **Two forms:**
 
@@ -95,13 +97,14 @@ complex := |x| ->
 - Multi-line bodies require indent after `->`
 - Last expression is implicit return
 
-### Example Syntax (Partially Working)
+### Example Syntax
 
 ```ripple
-# ✅ WORKS NOW (assignments)
+# ✅ WORKS NOW
 x := 10
 name := "alice"
 active: boolean = true
+y := x  # Identifier lookup
 
 # ❌ NOT IMPLEMENTED YET (but designed)
 # Binary operators
@@ -129,21 +132,24 @@ result := process(data, config)
 
 ```
 src/
-  main.zig        — Entry point, orchestration
-  token.zig       — Token, TokenType, Literal definitions
-  lexer.zig       — Lexer (complete)
-  types.zig       — Type enum (separate from Literal)
-  ast.zig         — AST node definitions
-  parser.zig      — Parser (assignments complete, needs more)
-  evaluator.zig   — [TODO] Evaluate AST → Values
-  type_checker.zig — [TODO] Type checking pass
-  vm.zig          — [TODO] VM with bytecode execution
-  supervisor.zig  — [TODO] Process supervision
+  main.zig           — Entry point, orchestration
+  token.zig          — Token, TokenType, Literal definitions
+  lexer.zig          — Lexer (complete) + tests inline
+  types.zig          — Type enum (separate from Literal)
+  ast.zig            — AST node definitions
+  parser.zig         — Parser (assignments complete) + tests inline
+  evaluator.zig      — Evaluator (complete for MVP) + tests inline
+
+  # Future:
+  type_checker.zig   — [TODO] Type checking pass
+  vm.zig             — [TODO] VM with bytecode execution
+  supervisor.zig     — [TODO] Process supervision
+build.zig            — Build configuration
 ```
 
 ---
 
-## Lexer (Complete)
+## Lexer (Complete ✅)
 
 ### What It Does
 - Tokenizes Ripple source code
@@ -161,16 +167,11 @@ src/
 - `ARROW` (`->`) — Lambda body separator (future)
 - `INDENT`/`DEDENT` — Block structure
 
-### Recent Changes
-- `Literal.number` is now just `f64`, not a union
-- NEWLINE tokens have empty lexeme for clean display
-- Indent stack properly initialized to `[0]`
-
 ---
 
-## Parser (Partially Complete)
+## Parser (Complete for MVP ✅)
 
-### What Works Now ✅
+### What Works Now
 
 **Assignments:**
 ```ripple
@@ -180,9 +181,9 @@ name: string = "alice"  # Explicit
 
 **Literals and identifiers:**
 - Numbers, strings, booleans, none
-- Identifiers
+- Identifiers with lookup
 
-### What's Missing ❌
+### What's Missing (Future)
 
 - Binary operators (`+`, `-`, `*`, `/`, `==`, etc.)
 - Pipeline operators (`|>`, `or`, `then`)
@@ -203,120 +204,43 @@ parse()
             → parsePrimary() ✅ DONE
 ```
 
-### Key Design Decisions
-
-1. **Type checking happens AFTER parsing**
-   - Parser builds AST with `type_annotation: ?Type`
-   - Type checker validates types in separate pass
-   - Don't validate types in parser
-
-2. **Everything calls down to `parsePrimary()` first**
-   - Recursive descent: always go to bottom, build back up
-   - Each level checks "is next token my operator?"
-   - If yes: build node, if no: return what came from below
-
-3. **Indentation for continuation**
-   - Newline ends expression UNLESS next line is indented
-   - Strict rule (like Python functions)
-
-4. **Match is a primary expression**
-   - Parsed in `parsePrimary()`, not a precedence level
-   - It's a value, not a statement
-
 ---
 
-## AST Structure (Current)
+## Evaluator (Complete for MVP ✅)
 
-```zig
-pub const Program = struct {
-    expressions: []Expr,
-};
+### What It Does
 
-pub const Expr = union(enum) {
-    literal: Literal,
-    identifier: []const u8,
-    assignment: AssignExpr,
-    // TODO: binary, pipeline, lambda, match, call, etc.
-};
+**Tree-walk interpreter:**
+- Executes assignments
+- Evaluates literals
+- Looks up identifiers in symbol table
+- Detects errors (undefined variables, redefinitions)
+- Collects execution trace (configurable)
 
-pub const AssignExpr = struct {
-    name: []const u8,
-    type: ?Type,  // null for inferred, Type.X for explicit
-    value: *Expr,
-};
-
-pub const Literal = union(enum) {
-    number: f64,
-    string: []const u8,
-    boolean: bool,
-    none,
-};
-```
-
-### Type System (Separate from Literal)
-
-```zig
-pub const Type = enum {
-    number,
-    string,
-    boolean,
-    none,
-    unknown,
-    // Future: list, map, function, custom types
-};
-```
-
-**Why separate?**
-- `Literal` = values in the program
-- `Type` = metadata describing what kind of value something is
-
----
-
-## Next Steps: Evaluator (PRIORITY)
-
-### What It Needs to Do
-
-1. **Execute assignments**
-   - Maintain a symbol table (name → value mapping)
-   - Store values from right side
-   - Look up values when identifiers are used
-
-2. **Evaluate expressions**
-   - Literals return their value
-   - Identifiers look up in symbol table
-   - (Future: binary ops, calls, etc.)
-
-3. **Return final values**
-   - Each expression evaluates to a value
-   - Program returns last expression's value (or none)
-
-### Design Approach
-
-**Simple tree-walk interpreter for prototype:**
+### Architecture
 
 ```zig
 pub const Evaluator = struct {
     allocator: std.mem.Allocator,
-    symbols: std.StringHashMap(Value),  // Symbol table
-    
-    pub fn evaluate(self: *Evaluator, program: Ast.Program) !Value {
-        var last_value: Value = .none;
-        
-        for (program.expressions) |expr| {
-            last_value = try self.evalExpr(expr);
-        }
-        
-        return last_value;
-    }
-    
-    fn evalExpr(self: *Evaluator, expr: Ast.Expr) !Value {
-        return switch (expr) {
-            .literal => |lit| Value.fromLiteral(lit),
-            .identifier => |name| try self.symbols.get(name),
-            .assignment => |a| try self.evalAssignment(a),
-            // TODO: other expression types
-        };
-    }
+    globals: std.StringHashMap(Value),      // Symbol table
+    config: EvalConfig,                     // Runtime configuration
+    results: std.ArrayList(EvalResult),     // Execution trace
+
+    pub fn evaluate(program: Ast.Program) !Value;
+    fn evalExpr(expr: Ast.Expr) !Value;
+    fn evalLiteral(lit: Ast.Literal) Value;
+    fn evalIdentifier(name: []const u8) !Value;
+    fn evalAssignment(assign: Ast.AssignExpr) !Value;
+    pub fn get_trace() []EvalResult;
+};
+```
+
+### Configuration
+
+```zig
+pub const EvalConfig = struct {
+    enable_trace: bool = false,  // Collect execution trace
+    // Future: memory limits, timeouts, etc.
 };
 ```
 
@@ -332,58 +256,180 @@ pub const Value = union(enum) {
 };
 ```
 
-Similar to `Literal`, but used at runtime instead of parse time.
+### Error Handling
 
----
-
-## Test Script (Reference)
-
-Start with simple assignments:
-
-```ripple
-x := 10
-y := 20
-sum := x + y  # Won't work yet (no binary ops)
-
-name := "alice"
-greeting := "Hello, " + name  # Won't work yet
-
-# For now, just test:
-x := 10
-y := 20
-name := "alice"
-active: boolean = true
+```zig
+pub const EvalError = error{
+    UndefinedVariable,
+    VariableAlreadyDefined,
+    // Future: more errors
+};
 ```
 
 ---
 
-## Learning Approach (Important)
+## Testing Framework (Inline with Code ✅)
 
-### How to Work with Claude
+### Approach
+- **Tests live at the bottom of source files** (standard Zig practice)
+- Use Zig's built-in `std.testing`
+- Run with: `zig build test`
+- Simple build.zig tests `main.zig` which imports everything
 
-**You are learning to understand, not just receiving code.**
+### Why Inline?
+- Simpler than separate test directories
+- No complex module configuration needed
+- Standard Zig convention
+- Tests stay close to implementation
 
-When continuing this project:
-1. **Ask questions first, not for solutions**
-2. **Defend your design choices**
-3. **Write pseudocode first**
-4. **Understand the why**
-5. **Debug your own code**
+### Test Pattern
 
-### What Claude Will Do
-- Ask you questions until you understand the problem
-- Point you to resources, not just solutions
-- Explain tradeoffs (why X vs. Y)
+```zig
+// At bottom of evaluator.zig:
+
+const testing = std.testing;
+
+test "evaluate literal number" {
+    const allocator = testing.allocator;
+
+    var lexer = try @import("lexer.zig").Lexer.init("x := 42", allocator);
+    const tokens = try lexer.tokenize(allocator);
+    defer allocator.free(tokens);
+
+    var parser = @import("parser.zig").Parser.init(tokens, allocator);
+    const program = try parser.parse();
+    defer parser.deinit();
+
+    var evaluator = try Evaluator.init(allocator, .{});
+    defer evaluator.deinit();
+
+    const result = try evaluator.evaluate(program);
+    try testing.expectEqual(Value{ .number = 42.0 }, result);
+}
+```
+
+### Current Tests
+- Literal evaluation (numbers, strings, booleans, none)
+- Identifier lookup
+- Assignment execution
+- Error cases (undefined vars, redefinition)
+- Trace collection
+
+---
+
+## Next Steps: Supervisor (PRIORITY)
+
+### Goal
+Build a supervisor that can:
+1. Run Ripple programs under monitoring
+2. Restart on failure (configurable max restarts)
+3. Enforce resource limits (memory, timeout)
+4. Collect execution traces
+5. Provide detailed results (success/failure, attempts, errors)
+
+### Design Philosophy
+**Model after BEAM/Erlang supervision**, but adapted for:
+- Short-lived scripts (not long-running processes)
+- Infrastructure/ops workloads (I/O bound, not CPU bound)
+- Explicit configuration (script-level or external)
+
+### Supervisor Model
+
+```
+Supervisor
+    ↓
+  spawns
+    ↓
+Process (Evaluator)
+    ↓
+  runs
+    ↓
+Lex → Parse → Eval (tree-walk)
+    ↓
+If crashes → Supervisor decides: restart? fail? fallback?
+```
+
+### Initial API Design
+
+```zig
+pub const SupervisorConfig = struct {
+    max_restarts: u32 = 3,
+    timeout_ms: ?u64 = null,
+    max_memory_bytes: ?usize = null,  // Track via allocator
+    enable_trace: bool = true,
+};
+
+pub const Supervisor = struct {
+    allocator: Allocator,
+    config: SupervisorConfig,
+
+    pub fn run(source: []const u8) !SupervisionResult;
+};
+
+pub const SupervisionResult = struct {
+    status: Status,  // success, failed_max_restarts, timeout, etc.
+    value: ?Value,
+    attempts: u32,
+    trace: []const EvalResult,
+    memory_used: usize,
+    duration_ms: u64,
+    last_error: ?anyerror,
+};
+```
+
+### Development Approach
+**Test-Driven Development (TDD):**
+1. Write ONE test for a specific behavior
+2. Implement minimum code to pass
+3. Review and refactor
+4. Repeat
+
+This builds understanding incrementally rather than receiving large code blocks.
+
+---
+
+## Learning Approach (CRITICAL)
+
+### TDD Methodology
+
+**For all new features (Supervisor, future work):**
+
+1. **Test First** — Claude writes a failing test
+2. **Implement** — You write code to make it pass
+3. **Review** — Discuss quality, edge cases, design
+4. **Refactor** — Improve together
+5. **Repeat** — Next test, next behavior
+
+### Why TDD?
+
+- **Forces design thinking** — Define behavior before implementation
+- **Proves correctness** — Not just "it compiles" but "it works"
+- **Catches regressions** — Changes don't break existing features
+- **Documents behavior** — Tests show how to use the code
+- **Builds deep understanding** — Can't fake it, must know it
+
+### Working with Claude
+
+**Claude will:**
+- Ask questions until you understand the problem
+- Write tests that define expected behavior
+- Point you to concepts, not just solutions
 - Make you defend your architecture
 - Push back on shortcuts
-- Refuse to write code first (ask you to design first)
-- Have you write first drafts, then iterate together
+- Refuse to write code without your design first
+
+**You will:**
+- Think through problems before coding
+- Write first implementations
+- Debug your own code (with guidance)
+- Defend your design choices
+- Build deep knowledge, not just copy code
 
 ### Red Flags (Stop and Reconsider)
 - Copying code without understanding it
-- Using patterns because they "just work"
 - Can't explain a design decision
 - Taking shortcuts to "just get it done"
+- Skipping the design/thinking phase
 
 **This is slower than receiving code. That's intentional. You're building deep knowledge.**
 
@@ -391,110 +437,155 @@ When continuing this project:
 
 ## Design Decisions Made
 
-### 1. **No Shadowing**
+### 1. **Tree-Walk Interpreter First**
+Not bytecode VM or JIT.
+
+**Why:**
+- Simpler to implement and understand
+- Good enough for infrastructure code (I/O bound)
+- Easier to instrument and supervise
+- Can add VM later if needed
+
+### 2. **Trace Collection in Evaluator**
+Evaluator owns the trace ArrayList.
+
+**Why:**
+- Simple for MVP
+- Configurable (can disable)
+- Foundation for supervision
+- Can add callbacks later if needed
+
+### 3. **Tests Inline with Code**
+Not in separate test directories.
+
+**Why:**
+- Simpler build configuration
+- Standard Zig practice
+- Avoids module system complexity
+- Tests stay close to implementation
+
+### 4. **No Shadowing**
 Variables can't be rebound. One name = one value.
 
 **Why:** Clarity. No confusion about which `x` you're referring to.
 
-### 2. **Match Only (No If/Else)**
+### 5. **Match Only (No If/Else)**
 All branching through `match` expressions.
 
 **Why:** Forces exhaustive handling. No "forgot the else branch" bugs.
 
-### 3. **Parentheses for Lambda Args**
-Decided against pipes `|x|` due to visual conflict with `|>`.
-
-**Wait, this was reversed:** Actually kept pipes `|x|` for lambda params.
+### 6. **Pipes for Lambda Args**
+Use `|x|` for lambda parameters.
 
 **Why:** More explicit than bare identifiers. Rust proved the pattern works.
 
-### 4. **Strict Indentation for Continuation**
-Newline after `->` requires indent for multi-line lambda body.
-
-**Why:** Consistent with Python. Clear visual structure.
-
-### 5. **Unified `number` Type**
+### 7. **Unified `number` Type**
 All numbers are `f64` (for prototype).
 
 **Why:** Simpler to implement. Can add int/float distinction later.
 
-### 6. **Type Inference with Optional Annotations**
-`:=` infers, `: type =` is explicit.
+### 8. **Supervision Default: Trace ON**
+Tracing enabled by default.
 
-**Why:** Convenience + safety. Most code uses inference, complex cases can be explicit.
+**Why:**
+- Infrastructure code needs observability
+- Easy to disable for performance-critical scripts
+- Aligns with "safe by default" philosophy
 
-### 7. **Parser Doesn't Validate Types**
-Type checking is a separate pass.
+### 9. **Memory Tracking via Allocator**
+Use tracking allocator, not OS queries.
 
-**Why:** Parser builds structure. Type checker validates semantics. Clean separation.
+**Why:**
+- Pure Zig, no syscalls
+- Cross-platform
+- Fast (atomic counters)
+- Good enough for MVP (tracks heap allocations)
 
 ---
 
 ## Lessons Learned
 
-1. **Don't speculate** — Only implement what's in the test script
-2. **Design before code** — Understand the problem, then implement
-3. **Recursive descent is simpler than it looks** — Each level: call down, check operator, build or return
-4. **Indentation is hard but doable** — Track with a stack, emit INDENT/DEDENT tokens
-5. **Type vs Literal confusion** — Keep them separate from the start
-6. **Parser complexity vs Lexer complexity** — Prefer simple lexer, complex parser
-7. **Don't optimize prematurely** — Get it working, then make it fast
+1. **Don't speculate** — Only implement what's tested
+2. **Design before code** — Understand the problem deeply
+3. **Recursive descent is elegant** — Each level: call down, check, build up
+4. **Indentation is manageable** — Stack-based tracking works
+5. **Type vs Literal separation** — Keep parse-time and runtime distinct
+6. **Tree-walk is sufficient** — Don't optimize prematurely
+7. **TDD teaches deeply** — Writing tests first forces understanding
+8. **Zig 0.15 has breaking changes** — Always check current docs
+9. **Build system complexity** — Keep it simple until necessary
+10. **Tests inline work best** — Separate test dirs are optional complexity
 
 ---
 
-## Immediate Next Chat
+## Zig 0.15.1 Specific Notes
 
-Start with: "I'm continuing the Ripple language project. I have a working lexer and parser for assignments. Now I need to build an evaluator that can execute assignments and evaluate expressions."
+**API Changes from Earlier Versions:**
+- `ArrayList.append()` now takes allocator as parameter
+- `ArrayList.init()` deprecated, use `initCapacity()`
+- Module system more explicit in `build.zig`
+- Imports: use `.zig` extension for relative file imports
+- `std.testing` accessed through `std`, not direct import
 
-Paste:
+**When continuing:**
+- Check current Zig docs for API changes
+- Use ChatGPT for syntax questions (has 0.15 knowledge)
+- Use Claude for concepts and architecture
+
+---
+
+## Immediate Next Session
+
+### Start With
+"I'm continuing the Ripple language project. I have:
+- ✅ Working lexer
+- ✅ Working parser (for assignments)
+- ✅ Working evaluator (for assignments, with trace collection)
+- ✅ Test framework set up (inline tests)
+
+I want to build the Supervisor next using TDD. One test at a time. Make me think and learn."
+
+### Paste
 - This handoff doc
-- Current `parser.zig`, `ast.zig`, `types.zig`
-- **Explicitly state: "I want to learn and understand everything. Make me think. Ask me questions."**
+- Any specific questions about the Supervisor design
+
+### Explicitly State
+"Use TDD: You write ONE test, I implement it, we review, repeat. Ask me questions. Make me understand before coding."
 
 ---
 
-## Questions to Ask Claude
-
-- "How should the evaluator maintain state (symbol table)?"
-- "What's the difference between tree-walk interpreter and bytecode VM?"
-- "Should the evaluator validate types, or leave that to a type checker?"
-- "How do I handle expressions that reference undefined variables?"
-- "What should the Value type look like?"
-
----
-
-## Current Parser Quality: 9/10
+## Current Implementation Quality: 8/10
 
 **What's good:**
-- Clean structure
-- No duplicate code
-- Good error messages
-- Proper helpers (`skipNewlines`, `parseTypeName`)
-- Works correctly for assignments
+- Clean, understandable code
+- Proper error handling
+- Configurable runtime
+- Test framework in place
+- Good separation of concerns
 
 **What could improve:**
-- More expression types (next phase)
-- Error recovery (continue parsing after error)
-- Better error context (show source line)
+- More expression types (operators, calls, match)
+- Better error messages (source locations)
+- More comprehensive tests
+- Documentation comments in code
 
 ---
 
 ## The Real Goal
 
-Not "build the next Python." Not "replace Bash."
+**Build a language for infrastructure code that's safer, clearer, and more reliable than current alternatives.**
 
-**Goal: Build a language for infrastructure code that's safer, clearer, and more reliable than current alternatives.**
+Success metrics:
+- DevOps engineers can read and understand code immediately
+- Explicit error handling prevents silent failures
+- Supervision catches and recovers from failures automatically
+- Effect tags make side effects visible
+- Integration with logging/monitoring is seamless
 
-Success means:
-- DevOps engineers can read and understand immediately
-- Explicit error handling and effect tags
-- Runs under supervision with automatic restarts
-- Integrates cleanly with logging/monitoring systems
-
-Even if only a few teams use it, that's a win.
+Even if only a few teams use it, that's a win. The goal is to prove the concept and learn deeply.
 
 ---
 
-Good luck. The lexer and parser foundation is solid. Now make it execute code.
+**You've built a solid foundation. The interpreter works. Now make it reliable with supervision.**
 
-**Remember: Learn by doing, not by copying. Ask questions. Defend your choices. Understand the why.**
+**Remember: TDD from here on. Test first, implement second, understand always.**

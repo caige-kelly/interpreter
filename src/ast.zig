@@ -1,9 +1,17 @@
 const std = @import("std");
 const TokenType = @import("token.zig").TokenType;
-const Type = @import("types.zig").Type;
 
 pub const Program = struct {
     expressions: []Expr,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *Program) void {
+        for (self.expressions) |*e| {
+            e.deinit(self.allocator);
+        }
+
+        self.allocator.free(self.expressions);
+    }
 };
 
 pub const Expr = union(enum) {
@@ -21,7 +29,22 @@ pub const Expr = union(enum) {
     or_expr: OrExpr,
     then_expr: ThenExpr,
     tap_expr: TapExpr,
+
+    pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .assignment => |*assign| {
+                // Free the heap-allocated value pointer
+                assign.value.deinit(allocator);
+                allocator.destroy(assign.value);
+            },
+            // Add cases for other pointer-containing variants
+            // For now, other variants don't need cleanup
+            else => {},
+        }
+    }
 };
+
+pub const Type = enum { number, string, boolean, none, unknown };
 
 pub const Literal = union(enum) {
     number: f64,
