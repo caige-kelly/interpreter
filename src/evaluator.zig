@@ -98,7 +98,7 @@ test "evaluate literal number" {
     const tokens = try lexer.scanTokens();
     defer allocator.free(tokens);
 
-    var parser = @import("parser.zig").Parser.init(tokens, allocator);
+    var parser = try @import("parser.zig").Parser.init(tokens, allocator);
     var program = try parser.parse();
     defer program.deinit(); // ← Add this!
 
@@ -117,7 +117,7 @@ test "undefined variable error" {
     const tokens = try lexer.scanTokens();
     defer allocator.free(tokens);
 
-    var parser = @import("parser.zig").Parser.init(tokens, allocator);
+    var parser = try @import("parser.zig").Parser.init(tokens, allocator);
     var program = try parser.parse();
     defer program.deinit();
 

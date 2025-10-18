@@ -10,35 +10,39 @@ pub const ParseError = error{ UnexpectedToken, InvalidAssignmentTarget, Expected
 pub const Parser = struct {
     allocator: std.mem.Allocator,
     tokens: []const Token,
+    exprs: std.ArrayList(Ast.Expr),
     current: usize = 0,
 
     // -------------------------------------------------------------
     // Initialization
     // -------------------------------------------------------------
-    pub fn init(tokens: []const Token, allocator: std.mem.Allocator) Parser {
+    pub fn init(tokens: []const Token, allocator: std.mem.Allocator) !Parser {
+        const expressions = try std.ArrayList(Ast.Expr).initCapacity(allocator, 16);
         return .{
             .tokens = tokens,
             .allocator = allocator,
+            .exprs = expressions,
         };
+    }
+
+    pub fn deinit(self: *Parser) void {
+        self.exprs.deinit(self.allocator);
     }
 
     // -------------------------------------------------------------
     // Entry point
     // -------------------------------------------------------------
     pub fn parse(self: *Parser) !Ast.Program {
-        var exprs = try std.ArrayList(Ast.Expr).initCapacity(self.allocator, 16);
-        defer _ = exprs.deinit(self.allocator);
-
         while (!self.isAtEnd()) {
             // Skip newlines and whitespace
             self.skipNewlines();
             if (self.isAtEnd()) break;
 
             const expr = try self.parseAssignment();
-            try exprs.append(self.allocator, expr);
+            try self.exprs.append(self.allocator, expr);
         }
 
-        return Ast.Program{ .expressions = try exprs.toOwnedSlice(self.allocator), .allocator = self.allocator };
+        return Ast.Program{ .expressions = try self.exprs.toOwnedSlice(self.allocator), .allocator = self.allocator };
     }
 
     // -------------------------------------------------------------
