@@ -7,7 +7,7 @@ pub const Program = struct {
 };
 
 pub const Expr = union(enum) {
-    literal: LiteralExpr,
+    literal: Literal,
     identifier: []const u8,
     map: MapExpr,
     list: ListExpr,
@@ -23,7 +23,7 @@ pub const Expr = union(enum) {
     tap_expr: TapExpr,
 };
 
-pub const LiteralExpr = union(enum) {
+pub const Literal = union(enum) {
     number: f64,
     string: []const u8,
     boolean: bool,

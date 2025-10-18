@@ -2,7 +2,7 @@ const std = @import("std");
 const errors = @import("error.zig");
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
-const Literal = @import("ast.zig").LiteralExpr;
+const Literal = @import("ast.zig").Literal;
 const KeywordMap = @import("token.zig").KeywordMap;
 
 const initial_token_capacity = 4096;
@@ -29,7 +29,7 @@ pub const Lexer = struct {
 
         return .{
             .source = source,
-            .tokens =  try std.ArrayList(Token).initCapacity(allocator, 0),
+            .tokens = try std.ArrayList(Token).initCapacity(allocator, 0),
             .allocator = allocator,
             .indent_stack = stack,
         };
@@ -84,7 +84,7 @@ pub const Lexer = struct {
 
         if (indent > current_indent) {
             // Indent increased
-            try self.indent_stack.append(self.allocator,indent);
+            try self.indent_stack.append(self.allocator, indent);
             self.tokens.append(self.allocator, .{
                 .type = .INDENT,
                 .lexeme = "",
@@ -95,8 +95,7 @@ pub const Lexer = struct {
             // Dedent: may need multiple DEDENT tokens
             while (self.indent_stack.items.len > 1 and self.indent_stack.items[self.indent_stack.items.len - 1] > indent) {
                 _ = self.indent_stack.pop();
-                self.tokens.append(self.allocator,
-                .{
+                self.tokens.append(self.allocator, .{
                     .type = .DEDENT,
                     .lexeme = "",
                     .line = self.line,
