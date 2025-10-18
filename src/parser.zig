@@ -37,9 +37,7 @@ pub const Parser = struct {
             try exprs.append(self.allocator, expr);
         }
 
-        return Ast.Program{ 
-            .expressions = try exprs.toOwnedSlice(self.allocator) 
-        };
+        return Ast.Program{ .expressions = try exprs.toOwnedSlice(self.allocator) };
     }
 
     // -------------------------------------------------------------
@@ -48,9 +46,9 @@ pub const Parser = struct {
 
     fn parseAssignment(self: *Parser) !Ast.Expr {
         const expr = try self.parsePrimary();
-        
+
         var explicit_type: ?Type = null;
-        
+
         if (self.match(.COLON_EQUAL)) {
             // inferred
         } else if (self.match(.COLON)) {
@@ -59,23 +57,23 @@ pub const Parser = struct {
                 errors.report(self.peek().line, "parse", "Expected type name after ':'");
                 return error.UnexpectedToken;
             }
-            
+
             const type_name = self.consume();
             explicit_type = try self.parseTypeName(type_name.lexeme);
-            
+
             if (!self.match(.EQUAL)) {
                 errors.report(self.peek().line, "parse", "Expected '=' after type annotation");
                 return error.UnexpectedToken;
             }
         } else {
-            return expr;  // Not an assignment
+            return expr; // Not an assignment
         }
-        
+
         // Common parsing for both branches
         self.skipNewlines();
-        
+
         const value = try self.parseAssignment();
-        
+
         // Extract identifier
         switch (expr) {
             .identifier => |name| {
@@ -101,10 +99,10 @@ pub const Parser = struct {
         const token = self.consume();
 
         return switch (token.type) {
-            .NUMBER => Ast.Expr{ .literal = token.literal.?},
-            .STRING => Ast.Expr{ .literal = token.literal.?},
-            .BOOLEAN => Ast.Expr{ .literal = token.literal.?},
-            .NONE => Ast.Expr{ .literal =  token.literal.?},
+            .NUMBER => Ast.Expr{ .literal = token.literal.? },
+            .STRING => Ast.Expr{ .literal = token.literal.? },
+            .BOOLEAN => Ast.Expr{ .literal = token.literal.? },
+            .NONE => Ast.Expr{ .literal = token.literal.? },
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
 
             else => {
@@ -123,7 +121,7 @@ pub const Parser = struct {
         if (std.mem.eql(u8, name, "string")) return .string;
         if (std.mem.eql(u8, name, "boolean")) return .boolean;
         if (std.mem.eql(u8, name, "none")) return .none;
-        
+
         errors.report(self.peek().line, "parse", "Unknown type name");
         return error.UnknownType;
     }
