@@ -55,6 +55,7 @@ pub const SupervisionResult = struct {
     pub const Status = enum {
         success,
         failed_max_restarts,
+        eval_error,
         parse_error,
         timeout,
     };
@@ -74,33 +75,72 @@ pub const Supervisor = struct {
     allocator: Allocator,
     config: SupervisorConfig,
 
-    pub fn init(allocator: Allocator, config: SupervisorConfig) !Supervisor {
-        return Supervisor{
-            .allocator = allocator,
-            .config = config,
-        };
-    }
-
-    pub fn deinit(self: *Supervisor) void {
-        _ = self;
-        // Nothing to clean up
-    }
-
     // ========================================================================
     // Public API
     // ========================================================================
 
     pub fn run(self: *Supervisor, source: []const u8) !SupervisionResult {
-        _ = self;
-        _ = source;
-        return error.NotImplemented;
+        var total_duration: u64 = 0;
+        var attempt: u32 = 1;
+
+        while (attempt <= self.config.max_restarts) : (attempt += 1) {
+            var result = try self.attemptRun(source);
+            total_duration += result.duration_ms;
+
+            // Guard: Success - return immediately
+            if (result.status == .success) {
+                return SupervisionResult{
+                    .allocator = self.allocator,
+                    .attempts = attempt,
+                    .duration_ms = total_duration,
+                    .final_value = result.value,
+                    .last_error = null,
+                    .memory_used = 0,
+                    .status = .success,
+                    .trace = result.trace,
+                };
+            }
+
+            // Guard: Parse error - don't retry
+            if (result.status == .parse_error) {
+                return SupervisionResult{
+                    .allocator = self.allocator,
+                    .attempts = attempt,
+                    .duration_ms = total_duration,
+                    .final_value = null,
+                    .last_error = result.err,
+                    .memory_used = 0,
+                    .status = .parse_error,
+                    .trace = result.trace,
+                };
+            }
+
+            // Guard: Last attempt with eval error - exhausted retries
+            if (result.status == .eval_error and attempt == self.config.max_restarts) {
+                return SupervisionResult{
+                    .allocator = self.allocator,
+                    .attempts = attempt,
+                    .duration_ms = total_duration,
+                    .final_value = null,
+                    .last_error = result.err,
+                    .memory_used = 0,
+                    .status = .failed_max_restarts,
+                    .trace = result.trace,
+                };
+            }
+
+            // Implicit: eval_error but not last attempt - free and retry
+            result.deinit(self.allocator);
+        }
+
+        unreachable;
     }
 
     // ========================================================================
     // Internal Implementation (unit tested)
     // ========================================================================
 
-    pub fn attemptRun(self: *Supervisor, source: []const u8) !RunAttempt {
+    fn attemptRun(self: *Supervisor, source: []const u8) !RunAttempt {
         const start_time = try std.time.Instant.now();
 
         var arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -134,6 +174,7 @@ pub const Supervisor = struct {
 
     fn copyTrace(self: *Supervisor, temp_trace: []const eval.EvalResult) ![]const eval.EvalResult {
         const trace_copy = try self.allocator.alloc(eval.EvalResult, temp_trace.len);
+        //defer self.allocator.free(temp_trace);
         @memcpy(trace_copy, temp_trace);
         return trace_copy;
     }
@@ -175,8 +216,10 @@ test "Supervisor.attemptRun succeeds for valid program" {
     const source = "x := 42";
 
     const config = SupervisorConfig{};
-    var supervisor = try Supervisor.init(allocator, config);
-    defer supervisor.deinit();
+    var supervisor = Supervisor{
+        .allocator = allocator,
+        .config = config,
+    };
 
     var attempt = try supervisor.attemptRun(source);
     defer attempt.deinit(allocator);
@@ -196,6 +239,56 @@ test "Supervisor.attemptRun succeeds for valid program" {
     try testing.expect(attempt.duration_ms >= 0);
 }
 
+test "Supervisor.attemptRun fails on eval error" {
+    const allocator = testing.allocator;
+    const source = "x := unknown"; // Undefined variable
+
+    const config = SupervisorConfig{};
+    var supervisor = Supervisor{
+        .allocator = allocator,
+        .config = config,
+    };
+
+    var attempt = try supervisor.attemptRun(source);
+    defer attempt.deinit(allocator);
+
+    // Should fail with eval error
+    try testing.expectEqual(RunAttempt.Status.eval_error, attempt.status);
+    try testing.expect(attempt.value == null);
+    try testing.expect(attempt.err != null);
+
+    // Should have trace (evaluation started, then failed)
+    try testing.expect(attempt.trace != null);
+
+    // Duration should be measured
+    try testing.expect(attempt.duration_ms >= 0);
+}
+
+test "Supervisor.attemptRun fails on parse error" {
+    const allocator = testing.allocator;
+    const source = "x := := 10"; // Syntax error
+
+    const config = SupervisorConfig{};
+    var supervisor = Supervisor{
+        .allocator = allocator,
+        .config = config,
+    };
+
+    var attempt = try supervisor.attemptRun(source);
+    defer attempt.deinit(allocator);
+
+    // Should fail with parse error
+    try testing.expectEqual(RunAttempt.Status.parse_error, attempt.status);
+    try testing.expect(attempt.value == null);
+    try testing.expect(attempt.err != null);
+
+    // Should have NO trace (never got to evaluation)
+    try testing.expect(attempt.trace == null);
+
+    // Duration should be measured
+    try testing.expect(attempt.duration_ms >= 0);
+}
+
 test "supervisor runs simple program successfully" {
     const allocator = testing.allocator;
     const source = "x := 42";
@@ -205,8 +298,10 @@ test "supervisor runs simple program successfully" {
         .enable_trace = true,
     };
 
-    var supervisor = try Supervisor.init(allocator, config);
-    defer supervisor.deinit();
+    var supervisor = Supervisor{
+        .allocator = allocator,
+        .config = config,
+    };
 
     var result = try supervisor.run(source);
     defer result.deinit();
@@ -224,4 +319,21 @@ test "supervisor runs simple program successfully" {
 
     // Should have trace (if enabled)
     try testing.expect(result.trace.?.len > 0);
+}
+
+test "supervisor exhausts max retries" {
+    const allocator = testing.allocator;
+    const source = "z := unknown";
+
+    const config = SupervisorConfig{ .max_restarts = 3 };
+    var supervisor = Supervisor{ .allocator = allocator, .config = config };
+
+    var result = try supervisor.run(source);
+    defer result.deinit();
+
+    // Should fail after 3 attempts
+    try testing.expectEqual(SupervisionResult.Status.failed_max_restarts, result.status);
+    try testing.expectEqual(@as(u32, 3), result.attempts);
+    try testing.expect(result.final_value == null);
+    try testing.expect(result.last_error != null);
 }

@@ -112,7 +112,7 @@ pub const Parser = struct {
 
             else => {
                 errors.report(token.line, "parse", "Unexpected token in primary expression");
-                std.debug.print("token: {any}\n", .{token});
+                //std.debug.print("token: {any}\n", .{token});
                 return error.UnexpectedToken;
             },
         };
