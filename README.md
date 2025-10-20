@@ -260,7 +260,7 @@ Current focus areas:
 
 // Caller chooses: handle errors explicitly or fail gracefully
 result := @deploy_service "./config.json"  // Monadic
-deployment := #deploy_service "./config.json" or none  // Tolerant
+deployment := #deploy_service "./config.json" or default_deployment // Tolarent
 ```
 
 ## Learn More
