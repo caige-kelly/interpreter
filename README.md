@@ -1,522 +1,574 @@
 # Ripple
 
-**A functional, pipeline-oriented language with explicit error handling**
+**Operational scripts that don't lie about failures**
 
-Ripple reimagines error handling by making failures a first-class part of your program's flow. Write clean, composable pipelines where errors propagate naturally—no try/catch blocks, no exception gymnastics.
+Stop duct-taping together bash, Python, cron, systemd, and logging just to run a reliable automation script.
 
-## Why Ripple?
+## The Problem
+
+Every production system has operational scripts:
+- Database backups that run at 3am
+- Multi-stage build pipelines  
+- Release automation across environments
+- Cleanup jobs, health checks, data syncs
+
+And they're all held together with:
+
+```bash
+#!/bin/bash
+set -e  # Pray nothing fails silently
+
+# /etc/cron.d/backup
+0 3 * * * /opt/scripts/backup.sh >> /var/log/backup.log 2>&1
+```
 
 ```python
-# Python: Exceptions separate error handling from logic
-from pathlib import Path
-import json
+# backup.py - scattered across 5 different systems
+import subprocess, logging, boto3, sys
+from apscheduler.schedulers.blocking import BlockingScheduler
 
-def load_config(path):
-    """Most Pythonic: let exceptions propagate, handle at boundary"""
-    config = json.loads(Path(path).read_text())
-    validate_config(config)
-    return config
+logging.basicConfig(filename='/var/log/backup.log')
+scheduler = BlockingScheduler()
 
-# At call site - error handling separated from happy path
-try:
-    config = load_config('./config.json')
-except (FileNotFoundError, json.JSONDecodeError, ValueError):
-    config = default_config
+@scheduler.scheduled_job('cron', hour=3)
+def backup():
+    databases = ['prod', 'staging', 'dev']
+    failed = []
+    
+    for db in databases:
+        try:
+            subprocess.run(['pg_dump', db], check=True)
+            subprocess.run(['gzip', f'{db}.sql'], check=True)
+            # Upload to S3...
+        except subprocess.CalledProcessError as e:
+            failed.append(db)
+            logging.error(f'{db} failed: {e}')
+    
+    if failed:
+        # How do you know what succeeded?
+        # How do you rollback partial failures?
+        # How do you trace where it broke?
+        send_alert(f"Backup failed: {failed}")
+
+if __name__ == '__main__':
+    scheduler.start()
 ```
 
-```
-// Ripple: Errors flow inline with logic
-config :=
-  #File.read "./config.json"
-    |> #Map.parse_json _
-    |> #validate_config _
-  or default_config
-```
+**You need 5 separate tools:**
+1. **Cron** - scheduling
+2. **Systemd/supervisor** - process management
+3. **Python/bash** - the actual logic
+4. **Logging libraries** - observability
+5. **Monitoring/alerting** - know when things break
 
-## Core Philosophy
+And **none of them talk to each other.**
 
-### Core Principles
-
-**No if/else.** Pattern matching via `match` expressions.
-
-**Boolean operators for guards.** `&&` and `||` compose conditions in match patterns and predicates, not for control flow.
-
-**Explicit error handling.** Choose monadic (`@`) or tolerant (`#`) semantics at the call site.
-
-**Immutable. No rebinding.** Once bound, names cannot be reused—use pipelines for transformations.
-
-**Pipelines first.** Data flows through transformations via `|>`.
-
-## Quick Tour
-
-### Execution Hierarchy: System → Process → Task
-
-Ripple organizes execution in three levels, each opt-in:
+## The Ripple Way
 
 ```
-// Script without configuration - just works
-servers := @get_servers
-servers |> @List.each (s -> @deploy s)
-
-// Add memory limits as you scale
-#System.max_memory = "512MB"
-servers := @get_servers
-servers |> @List.each (s -> @deploy s)
-
-// Production: comprehensive observability
-#System.max_memory = "512MB"
-#System.trace_to = "aws://logs/deployments"
-#Process.timeout = 600000
-servers := @get_servers
-servers |> @List.each (s -> @deploy s)
-```
-
-## Example
-
-```
-
-// my_s3_sync.rip
-#System.schedule = "0 3 * * *"           // Built-in cron
-#System.trace_to = "s3://logs/ripple/"   // Automatic observability
-#System.on_failure = @Alert.pagerduty    // Built-in alerting
+// backup.rip - everything in one place
+#System.schedule = "0 3 * * *"
+#System.trace_to = "s3://logs/ripple/"
+#System.on_failure = @Alert.pagerduty "Backup failed"
 #Process.timeout = 600000
 #Process.retries = 3
 
-buckets := ["logs-prod", "logs-staging", "logs-dev"]
+databases := ["prod", "staging", "dev"]
 
-results := buckets 
-  |> @List.parallel_map sync_bucket {max_concurrent: 3}
-  
-// Every expression is traced automatically
-results |> match ->
-  all_ok(_, _) -> @Log.info "All synced"
-  partial(ok, failed, _) -> @Alert.send ("Failed: " + #String.join failed)
+backup_db := db ->
+  @Process.run ("pg_dump " + db + " > " + db + ".sql")
+    |> @Result.and_then _ -> @Process.run ("gzip " + db + ".sql")
+    |> @Result.and_then _ -> @S3.upload (db + ".sql.gz") "backups/"
+
+results := databases 
+  |> @List.parallel_map backup_db {max_concurrent: 3}
+
+results |> @List.partition_results |> match ->
+  all_ok(backups, meta) ->
+    @Log.info ("Backed up " + #String.join backups ", " + " in " + meta.duration + "ms")
+  partial(succeeded, failed, meta) ->
+    @Log.info ("Succeeded: " + #String.join succeeded ", ")
+    @Alert.send ("Failed: " + #String.join (failed |> @List.map .db) ", ")
+    // meta.traces shows exactly where each failure happened
 ```
 
-```
-# Deploy the script
-rvm run my_s3_sync.rip
+```bash
+# One command to deploy
+rvm run backup.rip
 
-# Or run once
-rvm exec my_s3_sync.rip
+# Built-in management
+rvm list                 # See all running scripts
+rvm logs backup.rip      # View logs  
+rvm trace backup.rip     # See execution trace of every expression
+rvm restart backup.rip   # Graceful restart
+rvm stop backup.rip      # Stop
+```
+
+## What Makes Ripple Different
+
+### 1. Configurable Runtime - Not Just a Language
+
+**Bash/Python:** You write the script, you figure out how to run it  
+**Ripple:** Configure the runtime, it handles execution
+
+```
+// Configure once at the top
+#System.schedule = "0 3 * * *"           // Built-in cron
+#System.max_memory = "512MB"             // Resource limits
+#System.trace_to = "jaeger://traces"     // Distributed tracing
+#System.on_failure = @Alert.slack        // Failure hooks
+
+#Process.timeout = 600000                // 10 minute timeout
+#Process.retries = 3                     // Retry failed operations
+#Process.retry_backoff = "exponential"   // Smart backoff
+#Process.parallel_limit = 5              // Max concurrency
+
+// Your script - runtime does the rest
+@do_work
+```
+
+**No more:**
+- Writing timeout wrappers
+- Implementing retry logic
+- Setting up logging infrastructure
+- Configuring process supervisors
+- Writing cron syntax
+
+### 2. Errors Are First-Class - Not Exceptions
+
+**Python:** Exceptions separate error handling from logic
+```python
+try:
+    result1 = step1()
+    result2 = step2(result1)
+    result3 = step3(result2)
+    return result3
+except Exception as e:
+    # What actually succeeded? ¯\_(ツ)_/¯
+    rollback_somehow()
+```
+
+**Ripple:** Errors flow through your pipeline
+```
+@step1
+  |> @Result.and_then step2
+  |> @Result.and_then step3
+  |> match ->
+       ok(result, meta) -> result
+       err(msg, meta) ->
+         // meta tells you exactly which step failed
+         @rollback meta.completed_steps
+```
+
+**Caller chooses error semantics:**
+```
+// @ = Explicit: must handle errors
+config := @File.read "config.json"
+config |> match ->
+  ok(data, _) -> data
+  err(msg, _) -> @IO.exit 1
+
+// # = Tolerant: errors become none, provide fallback
+config := #File.read "config.json" or default_config
+```
+
+### 3. Expression-Level Observability - Built In
+
+**Python:** Add logging manually everywhere
+```python
+logger.info("Starting step 1")
+result1 = step1()
+logger.info(f"Step 1 done in {duration}ms")
+logger.info("Starting step 2")
+# ... ad infinitum
+```
+
+**Ripple:** Every expression is automatically traced
+```
+// Just write your logic
+@build_artifact "linux"
+  |> @Result.and_then (artifact -> @sign artifact)
+  |> @Result.and_then (signed -> @upload signed "releases/")
+```
+
+```bash
+# Automatic traces for every expression
+rvm trace build.rip
+
+# Output:
+# [12:34:01.234] Line 5: @build_artifact "linux" 
+#   -> ok("app-v1.0-linux", {duration: 2341ms, memory: 234MB})
+# [12:34:03.575] Line 6: @sign 
+#   -> ok("app-v1.0-linux.sig", {duration: 89ms})
+# [12:34:03.664] Line 7: @upload
+#   -> err("network timeout", {duration: 1205ms, retries: 3})
+```
+
+Export traces anywhere:
+```
+#System.trace_to = "jaeger://localhost:6831"
+#System.trace_to = "s3://logs/traces/"
+#System.trace_to = "file:///var/log/ripple/"
+#System.trace_to = "datadog://api-key"
+```
+
+### 4. Process Management - Built In
+
+**Bash/Python:** Figure out systemd/supervisor/cron yourself
+
+**Ripple:** One CLI for everything
+```bash
+# Run as daemon with supervision
+rvm run my_script.rip
+
+# One-off execution
+rvm exec my_script.rip
 
 # See what's running
 rvm list
 # Output:
-# my_s3_sync.rip    running    last: 2024-10-20 03:00  next: 2024-10-21 03:00
-# deploy.rip        idle       last: 2024-10-19 14:32  next: manual
+# NAME              STATUS    LAST RUN              NEXT RUN
+# backup.rip        running   2024-10-20 03:00:00   2024-10-21 03:00:00
+# deploy.rip        idle      2024-10-19 14:32:15   manual
+# cleanup.rip       failed    2024-10-20 01:00:00   2024-10-21 01:00:00
 
-# Check logs/traces
-rvm logs my_s3_sync.rip
-rvm trace my_s3_sync.rip --expression 23  # See exactly what happened at line 23
+# View logs
+rvm logs backup.rip
+rvm logs backup.rip --follow
 
-# Stop it
-rvm stop my_s3_sync.rip
+# Debug failures
+rvm trace backup.rip
+rvm trace backup.rip --expression 23  # See exact failure point
+
+# Management
+rvm restart backup.rip
+rvm stop backup.rip
+rvm kill backup.rip
 ```
 
-**#System** - Configure the runtime environment (memory, logging)
-**#Process** - Configure this program's execution (timeout, retries)
-**Task** - Individual operations (every expression is a task)
+### 5. Partial Success Is Explicit
 
-### Variables & Types
+**The killer feature for multi-stage operations.**
 
-```
-x := 42                    // Type inferred
-name := "alice"            // Immutable by default
-active := true
-nothing := none
-user: string = "bob"       // Explicit allowed
+**Python:** Track partial success manually
+```python
+succeeded = []
+failed = []
+for server in servers:
+    try:
+        deploy(server)
+        succeeded.append(server)
+    except Exception as e:
+        failed.append((server, str(e)))
 
-// No shadowing allowed - use pipelines instead
-result := 1
-  |> (_ + 1)               // 2
-  |> (_ * 2)               // 4
-```
-
-### Functions
-
-```
-// Everything is a lambda bound to a name
-add := a, b -> a + b
-result := add 10 32        // 42
-
-// Multi-line (implicit return of last expression)
-process := x ->
-  y := x + 1
-  y * 2
+# Now manually handle partial success
+if failed:
+    print(f"Deployed to: {succeeded}")
+    print(f"Failed: {failed}")
+    # Rollback? Which servers? How?
 ```
 
-### Pipelines
-
+**Ripple:** Built into the type system
 ```
-result :=
-  "hello world"
-    |> #String.uppercase _
-    |> #String.split " "
-    |> #List.map (word -> word + "!")
-```
+servers := ["web-1", "web-2", "web-3"]
 
-### Error Handling: Choose Your Semantics
+results := servers 
+  |> @List.map (s -> @deploy s)
 
-Ripple's killer feature: **caller-driven error interpretation**. The same function can be used monadically (explicit error handling) or tolerantly (fail gracefully).
-
-**By default, you must explicitly choose `@` or `#` for every call.** This makes error handling visible and intentional. However, you can set a default mode for convenience:
-
-```
-// Opt into a default mode for the whole script
-#Process.implicit_hash = true   // Default to tolerant (#)
-// or
-#Process.implicit_at = true     // Default to explicit (@)
-
-// Now calls without prefix use your chosen default
-config := File.read path        // Uses your default mode
+results |> @List.partition_results |> match ->
+  all_ok(deploys, meta) ->
+    @IO.stdout "✓ Deployed to all servers"
+  partial(succeeded, failed, meta) ->
+    @IO.stdout ("✓ Deployed: " + #String.join succeeded ", ")
+    @IO.stderr ("✗ Failed: " + #String.join (failed |> @List.map .server) ", ")
+    @rollback succeeded  // Rollback what succeeded
 ```
 
-**Critical: Unhandled Result types halt compilation.** When using `@`, you must explicitly handle errors through pattern matching or convert with escape hatches like `unwrap_or_die`.
+### 6. Pipelines - Not Procedures
 
-#### Monadic (`@`): Explicit Error Handling
-
-```
-// Expose both success and error channels
-response := @Net.get "https://api.example.com/data"
-
-// MUST handle the Result - compilation fails otherwise
-response |> match ->
-  ok(body, meta) ->
-    @IO.stdout ("Success: " + body)
-  err(msg, meta) ->
-    @Slack.post ("Error: " + msg)
+**Bash:** Everything is mutations and subshells
+```bash
+result=$(step1)
+result=$(echo "$result" | step2)
+result=$(echo "$result" | step3)
 ```
 
-#### Tolerant (`#`): Graceful Fallback
-
-```
-// Collapse errors to none, provide fallback
-config :=
-  #File.read "./config.json"
-    |> #Map.parse _
-  or #Map.new { env: "dev" }
-
-// No explicit error handling needed - errors become none
+**Python:** Imperative with lots of variables
+```python
+result = step1()
+result = step2(result)
+result = step3(result)
 ```
 
-#### Escape Hatches: When Failure is a Bug
-
-```
-// When you KNOW it should work - crash loudly if it doesn't
-config := @File.read "./config.json" 
-  |> @Result.unwrap_or_die
-
-// Or with a message
-user_id := @Map.get users "alice" 
-  |> @Result.unwrap_or_die "Alice must exist in test data"
-```
-
-### Result Type: Dual Channel Architecture
-
-```
-Result<V, E, S> = ok(V, S) | err(E, S)
-```
-
-**Two channels:**
-- **User channel:** `V` or `E` - your semantic value
-- **System channel:** `S` - metadata (duration, retries, status)
-
-### Pattern Matching
-
-No `if/else` statements. Use `match` for all conditional logic:
-
-```
-// Health check responses
-response := @check_health server health_url
-
-response |> match ->
-  ok(data, meta) ->
-    @IO.stdout ("Server healthy - responded in " + meta.duration + "ms")
-  err(msg, meta) ->
-    @Slack.post ("Health check failed: " + msg)
-
-// Guards compose conditions with && and ||
-user |> match u ->
-  u.age >= 18 && u.has_license -> 
-    @grant_access u
-  u.age >= 16 && u.has_permit -> 
-    @grant_supervised_access u
-  any -> 
-    @deny_access u
-
-// Deployment result handling
-deployment_result |> match ->
-  ok(servers, _) ->
-    @IO.stdout ("Deployed to " + (#String.join servers ", "))
-  err(failure, _) ->
-    @IO.stderr ("Failed at server: " + failure.server)
-    @rollback failure.deployed_servers
-```
-
-### Side Effects with `tap`
-
-Observe values in a pipeline without changing them:
-
+**Ripple:** Data flows through transformations
 ```
 result :=
-  @Net.post url payload
-    |> tap err(msg, _) ->
-         @Slack.post ("Failed: " + msg)
-    |> @Map.parse _
-  or default_response
+  @step1
+    |> @step2 _
+    |> @step3 _
+    |> match ->
+         ok(val, _) -> val
+         err(msg, meta) ->
+           @Log.error ("Failed at " + meta.stage + ": " + msg)
+           @IO.exit 1
 ```
 
-## Language Design
+## Real-World Examples
 
-### What's Different
+### Multi-Platform Release Build
 
-- **No `if/else`** - Pattern matching replaces conditionals
-- **No exceptions** - Errors are values in Result types
-- **No variable shadowing** - Once bound, a name cannot be reused
-- **No reassignment** - All values are immutable
-- **Parentheses only for grouping** - Not for function calls
+```
+targets := [
+  {arch: "x86_64", os: "linux"},
+  {arch: "aarch64", os: "linux"},
+  {arch: "x86_64", os: "windows"},
+  {arch: "x86_64", os: "darwin"}
+]
 
-### Operator Overview
+build := target ->
+  @Process.run ("cargo build --release --target " + target.arch + "-" + target.os)
+    |> @Result.and_then _ -> @Process.run ("./scripts/sign.sh " + target.arch + "-" + target.os)
+    |> @Result.and_then _ -> @S3.upload ("target/" + target.arch + "-" + target.os + "/release/app") "releases/"
+    |> @Result.map _ -> target.arch + "-" + target.os
 
-| Operator | Purpose | Example |
-|----------|---------|---------|
-| `\|>` | Pipeline forward | `data \|> process \|> save` |
-| `or` | Fallback on none | `#File.read path or default` |
-| `then` | Sequence (only if left not none) | `#File.read path then #Map.parse _` |
-| `tap` | Side effects | `result \|> tap err -> @Log.error _` |
-| `match` | Pattern matching | `value \|> match -> ...` |
-| `@` | Monadic/explicit mode | `@Net.get url` |
-| `#` | Tolerant mode | `#File.read path or default` |
+// Build all targets in parallel
+results := targets 
+  |> @List.parallel_map (t -> build t) {max_concurrent: 4}
+
+// Handle partial success explicitly
+results |> @List.partition_results |> match ->
+  all_ok(builds, meta) ->
+    @IO.stdout ("✓ All builds succeeded in " + meta.duration + "ms")
+    @GitHub.create_release "v1.0.0" builds
+  partial(succeeded, failed, meta) ->
+    @IO.stdout ("✓ Built: " + #String.join succeeded ", ")
+    @IO.stderr ("✗ Failed: " + #String.join (failed |> @List.map .target) ", ")
+    @Slack.post ("Release partially failed. Built: " + succeeded)
+```
+
+### Database Backup with Cleanup
+
+```
+#System.schedule = "0 3 * * *"
+#System.trace_to = "s3://logs/backup-traces/"
+#System.on_failure = @Alert.pagerduty
+#Process.timeout = 1800000  // 30 minutes
+
+databases := ["users", "orders", "analytics"]
+
+backup_and_cleanup := db ->
+  timestamp := @Time.now |> @Time.format "YYYYMMDD-HHmmss"
+  filename := db + "-" + timestamp + ".sql.gz"
+  
+  @Process.run ("pg_dump " + db + " | gzip > /tmp/" + filename)
+    |> @Result.and_then _ -> @S3.upload ("/tmp/" + filename) ("backups/" + db + "/")
+    |> @Result.and_then _ -> @File.delete ("/tmp/" + filename)
+    |> @Result.and_then _ -> @S3.delete_old ("backups/" + db) {keep_last: 30}
+    |> @Result.map _ -> {db: db, file: filename}
+
+results := databases
+  |> @List.parallel_map backup_and_cleanup {max_concurrent: 2}
+
+results |> @List.partition_results |> match ->
+  all_ok(backups, meta) ->
+    @Log.info ("Backed up " + #List.length backups + " databases")
+    @Metrics.gauge "backup.success" (#List.length backups)
+  partial(ok, failed, meta) ->
+    ok |> @List.each (b -> @Log.info ("✓ " + b.db))
+    failed |> @List.each (f -> 
+      @Log.error ("✗ " + f.value.db + ": " + f.error)
+      @Metrics.increment "backup.failure"
+    )
+```
+
+### Health Check with Circuit Breaker
+
+```
+#System.schedule = "*/5 * * * *"  // Every 5 minutes
+#System.trace_to = "datadog://api-key"
+#Process.timeout = 30000
+
+services := [
+  {name: "api", url: "https://api.example.com/health"},
+  {name: "worker", url: "https://worker.example.com/health"},
+  {name: "db", url: "https://db.example.com/health"}
+]
+
+check_health := service ->
+  @Net.get service.url {timeout: 5000}
+    |> @Result.and_then (resp -> 
+         @Result.ensure resp 
+           (r -> r.status == 200 && r.body.status == "healthy")
+           (service.name + " unhealthy")
+       )
+    |> @Result.map _ -> service.name
+
+results := services
+  |> @List.parallel_map (s -> check_health s) {max_concurrent: 3}
+
+results |> @List.partition_results |> match ->
+  all_ok(_, _) ->
+    @Metrics.gauge "health.all_up" 1
+  partial(healthy, unhealthy, _) ->
+    healthy |> @List.each (s -> @Metrics.gauge ("health." + s) 1)
+    unhealthy |> @List.each (f ->
+      @Metrics.gauge ("health." + f.value.name) 0
+      @Alert.slack ("⚠️ " + f.value.name + " is unhealthy: " + f.error)
+    )
+```
+
+### CI/CD Pipeline
+
+```
+// ci.rip - explicit error paths at every stage
+#Process.timeout = 1800000
+#System.trace_to = "file:///var/log/ripple/ci/"
+
+@Git.fetch
+  |> @Result.and_then _ -> @Process.run "cargo test --all"
+  |> tap err(msg, meta) ->
+       @GitHub.comment "Tests failed: " + msg
+       @Metrics.increment "ci.test.failure"
+  |> @Result.and_then _ -> @Process.run "cargo build --release"
+  |> tap err(msg, meta) ->
+       @GitHub.comment "Build failed: " + msg
+       @Metrics.increment "ci.build.failure"
+  |> @Result.and_then _ -> @Docker.build {tag: "myapp:latest"}
+  |> @Result.and_then img -> @Docker.push img
+  |> @Result.and_then _ -> @K8s.apply "deployment.yaml"
+  |> match ->
+       ok(_, meta) ->
+         @GitHub.comment "✓ Deployed successfully"
+         @Slack.post "#deploys" "Deployed to production"
+         @Metrics.increment "ci.deploy.success"
+       err(msg, meta) ->
+         @GitHub.comment ("✗ Deploy failed at: " + meta.stage)
+         @Slack.post "#incidents" ("Deploy failed: " + msg)
+         @rollback meta.completed_stages
+```
+
+## Use Ripple For
+
+✅ **Build & release automation** - Multi-stage, multi-platform, with rollback  
+✅ **Operational tasks** - Backups, cleanup, health checks, data syncs  
+✅ **CI/CD pipelines** - Explicit error paths, automatic retries  
+✅ **Scheduled jobs** - Replace cron with built-in scheduling  
+✅ **Developer tooling** - Code generation, linting, formatting orchestration  
+✅ **Infrastructure automation** - Provisioning, deployment, monitoring
+
+## Don't Use Ripple For
+
+❌ Web applications (use Rust, Go, Node)  
+❌ Data science (use Python)  
+❌ Systems programming (use Rust, C++)  
+❌ Mobile apps (use Swift, Kotlin)
+
+**Ripple is for the operational glue code in your repos - the stuff that's currently bash or Python scripts.**
+
+## Comparison
+
+| Feature | Bash | Python | Airflow | Ripple |
+|---------|------|--------|---------|--------|
+| **Scheduling** | cron | APScheduler | ✓ Built-in | ✓ Built-in |
+| **Process Mgmt** | systemd | supervisor | ✓ Built-in | ✓ Built-in |
+| **Error Handling** | `set -e` | try/except | Task retries | ✓ Type system |
+| **Observability** | Manual logs | Manual logs | UI only | ✓ Auto-trace |
+| **Partial Success** | ❌ | Manual tracking | Task-level | ✓ Built-in |
+| **Parallelism** | `&` and hope | ThreadPoolExecutor | ✓ | ✓ Built-in |
+| **Type Safety** | ❌ | Runtime only | ❌ | ✓ Compile-time |
+| **Learning Curve** | Low | Low | High | Medium |
+| **Deployment** | Everywhere | Everywhere | Cluster needed | Single binary |
+
+## Installation
+
+```bash
+# Single binary install
+curl -fsSL https://ripple-lang.org/install.sh | sh
+
+# Or build from source  
+git clone https://github.com/yourusername/ripple
+cd ripple && zig build -Doptimize=ReleaseFast
+
+# Verify
+rvm --version
+```
+
+## Quick Start
+
+```
+// hello.rip
+#System.trace_to = "file://./logs/"
+
+@IO.stdout "Hello, Ripple!"
+```
+
+```bash
+# Run once
+rvm exec hello.rip
+
+# Run as daemon
+rvm run hello.rip
+
+# View trace
+rvm trace hello.rip
+```
 
 ## Current Status
 
 **Phase 1: Foundation** ✅ Complete
-- Lexer, parser, evaluator functional
-- 56 tests passing, zero memory leaks
-- Arithmetic, comparisons, strings working
-- Clean functional architecture
+- Lexer, parser, evaluator (56 tests passing)
+- Arithmetic, strings, comparisons working
 
-**Phase 2: Core Features** 🔨 In Progress
+**Phase 2: Core Language** 🔨 In Progress  
 - Functions and lambdas
 - Lists and maps
-- Pipeline operator
+- Pipeline operator  
 - Pattern matching
 
 **Phase 3: Error Handling** ⏳ Designed
 - Result type implementation
-- `@` vs `#` domain markers
+- `@` vs `#` semantics
 - `or`, `then`, `tap` operators
 
-## Building & Testing
+**Phase 4: Runtime & Stdlib** 📋 Next
+- Process execution (`@Process.run`)
+- File operations (`@File.*`)
+- Network (`@Net.*`)
+- Supervisor & tracing
 
-```bash
-# Run all tests
-zig build test
+## Philosophy
 
-# With detailed output
-zig build test --summary all
+**Ripple syntax is Python-clean.** Type safety and error tracking come from IDE tooling:
 
-# Run specific component tests
-zig test src/evaluator.zig
-```
+- Hover to see inferred types  
+- IDE marks `@` functions (can fail) differently from `#` (tolerant)
+- Inline hints reveal error paths
+- Expression traces available in debugger
 
-## Project Structure
+**Best of both worlds:** Python's readability + Haskell's safety + observability built in.
 
-```
-ripple/
-├── src/
-│   ├── lexer.zig          # Tokenization (functional)
-│   ├── parser.zig         # Precedence climbing parser (functional)
-│   ├── evaluator.zig      # Type-aware evaluation (functional)
-│   ├── supervisor.zig     # Execution orchestration
-│   ├── ast.zig            # Abstract syntax tree
-│   └── error.zig          # Error reporting
-├── docs/
-│   ├── reference.ripple   # Language reference (v5.0)
-│   └── handoff.md         # Project documentation (v2.0)
-└── build.zig              # Zig build configuration
-```
+## Language Principles
 
-## Philosophy: Language + IDE Partnership
-
-Ripple's syntax is intentionally clean (like Python). Type rigor and semantic clarity come from IDE tooling (like Haskell):
-
-- **Hover** to see inferred types
-- **IDE marks** `@` functions differently from `#` functions
-- **Inline hints** reveal the type system
-- **Verbose tracing** available via IDE plugin
-
-Best of both worlds: Python's readability + Haskell's type safety.
-
-## Contributing
-
-Ripple is in active development. We're currently implementing core language features using TDD (Test-Driven Development).
-
-Current focus areas:
-- Function definition and calls
-- Collection types (lists, maps)
-- Pipeline operator implementation
-- Pattern matching
-
-## Example: Real-World Deployment Script
-
-**Python - idiomatic with exception handling:**
-```python
-import subprocess
-from typing import List
-
-def deploy_to_server(server: str, user: str, app_name: str, version: str):
-    """Pythonic: raise on error, handle at boundary"""
-    commands = [
-        f"ssh {user}@{server} 'sudo systemctl stop {app_name}'",
-        f"scp ./dist/{app_name}-{version}.tar.gz {user}@{server}:/tmp/",
-        f"ssh {user}@{server} 'cd /opt/{app_name} && tar -xzf /tmp/{app_name}-{version}.tar.gz'",
-        f"ssh {user}@{server} 'sudo systemctl start {app_name}'",
-    ]
-    
-    for cmd in commands:
-        subprocess.run(
-            cmd, 
-            shell=True, 
-            check=True,  # Raises CalledProcessError on failure
-            capture_output=True, 
-            timeout=30
-        )
-
-# Usage: error handling is distant from execution
-try:
-    deploy_to_server(server, user, app_name, version)
-    print(f"✓ Deployed to {server}")
-except subprocess.CalledProcessError as e:
-    print(f"Command failed: {e.stderr.decode()}")
-    rollback(server)
-except subprocess.TimeoutExpired:
-    print("Deployment timed out")
-    rollback(server)
-```
-
-**Ripple - errors flow with logic:**
-```
-@deploy_to_server := server user app_name version ->
-  [
-    -> @Process.run ("ssh " + user + "@" + server + " 'sudo systemctl stop " + app_name + "'") {timeout: 30},
-    -> @Process.run ("scp ./dist/" + app_name + "-" + version + ".tar.gz " + user + "@" + server + ":/tmp/") {timeout: 30},
-    -> @Process.run ("ssh " + user + "@" + server + " 'cd /opt/" + app_name + " && tar -xzf /tmp/" + app_name + "-" + version + ".tar.gz'") {timeout: 30},
-    -> @Process.run ("ssh " + user + "@" + server + " 'sudo systemctl start " + app_name + "'") {timeout: 30},
-  ]
-    |> @List.try_sequence _
-
-// Usage: error handling flows inline
-@deploy_to_server server user app_name version
-  |> match ->
-       ok(_, _) -> @IO.stdout ("✓ Deployed to " + server)
-       err(msg, _) ->
-         @IO.stderr msg
-         @rollback server
-```
-
-**Health check with retry logic:**
-```python
-import requests
-import time
-
-def wait_for_healthy(server: str, health_url: str, max_retries: int = 10) -> None:
-    """Pythonic: raise on final failure"""
-    for attempt in range(max_retries):
-        try:
-            response = requests.get(f"http://{server}{health_url}", timeout=5)
-            response.raise_for_status()
-            
-            if response.json().get('status') == 'healthy':
-                return  # Success
-                
-        except (requests.RequestException, ValueError):
-            if attempt == max_retries - 1:
-                raise  # Re-raise on final attempt
-            time.sleep(3)
-    
-    raise TimeoutError(f"Server {server} did not become healthy")
-
-# Usage
-try:
-    wait_for_healthy(server, health_url)
-    print("Server healthy")
-except (requests.RequestException, TimeoutError) as e:
-    print(f"Health check failed: {e}")
-```
-
-```
-// Ripple: Retry logic as a task combinator
-@wait_for_healthy := server health_url max_retries ->
-  check := ->
-    data := @Net.get ("http://" + server + health_url) {timeout: 5}
-      |> @Map.parse_json _
-    @Result.ensure data (d -> d.status == "healthy") "Server not healthy"
-  
-  @Task.retry check {max_attempts: max_retries, delay: 3000}
-
-// Usage: inline error handling
-@wait_for_healthy server health_url 10
-  |> match ->
-       ok(_, _) -> @IO.stdout "Server healthy"
-       err(msg, _) -> @IO.stderr ("Health check failed: " + msg)
-```
-
-**Configuration validation:**
-```python
-def validate_config(config: dict) -> dict:
-    """Pythonic: raise descriptive errors"""
-    required = ['servers', 'app_name', 'deploy_user', 'health_check_url']
-    
-    missing = [field for field in required if field not in config]
-    if missing:
-        raise ValueError(f"Missing required fields: {', '.join(missing)}")
-    
-    if not config['servers']:
-        raise ValueError("No servers specified")
-    
-    return config
-
-# Usage: try/except at boundary
-try:
-    config = validate_config(raw_config)
-except ValueError as e:
-    print(f"Invalid config: {e}")
-    sys.exit(1)
-```
-
-```
-// Ripple: Return Result type, compose naturally
-@validate_config := config ->
-  required := ["servers", "app_name", "deploy_user", "health_check_url"]
-  missing := required
-    |> #List.filter field -> #Map.get config field == none
-  
-  #List.is_empty missing |> match ->
-    false -> err("Missing required fields: " + #String.join missing ", ")
-    true ->
-      #List.is_empty config.servers |> match ->
-        true -> err("No servers specified")
-        false -> ok(config)
-
-// Usage: compose with other operations
-config :=
-  @File.read path
-    |> @Map.parse_json _
-    |> @validate_config _
-    |> match ->
-         ok(c, _) -> c
-         err(msg, _) ->
-           @IO.stderr ("Invalid config: " + msg)
-           @IO.exit 1
-```
+**No if/else** - Pattern matching via `match` expressions  
+**Explicit errors** - Choose `@` (must handle) or `#` (graceful fallback)  
+**Immutable** - No variable rebinding, use pipelines  
+**Pipelines first** - Data flows through transformations  
+**Built-in observability** - Every expression traced automatically
 
 ## Learn More
 
-- **Reference Script**: `docs/reference.ripple` - Complete language specification
-- **Handoff Document**: `docs/handoff.md` - Implementation details and roadmap
-- **Design Philosophy**: See "Why No If/Else?" and "@ vs # Domains" sections
+- **Language Reference**: `docs/reference.ripple` - Complete spec
+- **Implementation Guide**: `docs/handoff.md` - Technical details  
+- **Community**: [Discord/Forum TBD]
+
+## Contributing
+
+Ripple is in active development using TDD. Current focus:
+- Core language features (functions, collections, pipelines)
+- Pattern matching implementation
+- Runtime and supervisor design
+
+See `docs/handoff.md` for architecture and contribution guidelines.
 
 ## License
 
@@ -524,4 +576,6 @@ config :=
 
 ---
 
-**Ripple**: Making errors flow naturally through your code.
+**Ripple: Stop duct-taping together bash, Python, cron, and hope.**
+
+Write operational scripts with built-in scheduling, supervision, and observability.
