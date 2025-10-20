@@ -71,6 +71,47 @@ servers := @get_servers
 servers |> @List.each (s -> @deploy s)
 ```
 
+```
+
+// my_s3_sync.rip
+#System.schedule = "0 3 * * *"           // Built-in cron
+#System.trace_to = "s3://logs/ripple/"   // Automatic observability
+#System.on_failure = @Alert.pagerduty    // Built-in alerting
+#Process.timeout = 600000
+#Process.retries = 3
+
+buckets := ["logs-prod", "logs-staging", "logs-dev"]
+
+results := buckets 
+  |> @List.parallel_map sync_bucket {max_concurrent: 3}
+  
+// Every expression is traced automatically
+results |> match ->
+  all_ok(_, _) -> @Log.info "All synced"
+  partial(ok, failed, _) -> @Alert.send ("Failed: " + #String.join failed)
+```
+
+```
+# Deploy the script
+rvm run my_s3_sync.rip
+
+# Or run once
+rvm exec my_s3_sync.rip
+
+# See what's running
+rvm list
+# Output:
+# my_s3_sync.rip    running    last: 2024-10-20 03:00  next: 2024-10-21 03:00
+# deploy.rip        idle       last: 2024-10-19 14:32  next: manual
+
+# Check logs/traces
+rvm logs my_s3_sync.rip
+rvm trace my_s3_sync.rip --expression 23  # See exactly what happened at line 23
+
+# Stop it
+rvm stop my_s3_sync.rip
+```
+
 **#System** - Configure the runtime environment (memory, logging)
 **#Process** - Configure this program's execution (timeout, retries)
 **Task** - Individual operations (every expression is a task)
