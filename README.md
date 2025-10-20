@@ -35,6 +35,8 @@ config :=
 
 ## Core Philosophy
 
+### Core Principles
+
 **No if/else.** Pattern matching via `match` expressions.
 
 **Boolean operators for guards.** `&&` and `||` compose conditions in match patterns and predicates, not for control flow.
@@ -54,7 +56,7 @@ x := 42                    // Type inferred
 name := "alice"            // Immutable by default
 active := true
 nothing := none
-user: string = "bob"       // Explicit types allowed
+user: string = "bob"       // Explicit typing allowed
 
 // No shadowing allowed - use pipelines instead
 result := 1
