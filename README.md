@@ -133,7 +133,6 @@ do_work
 - Setting up logging infrastructure
 - Configuring process supervisors
 - Writing cron syntax
-- Prefixing every function call with `@`
 
 ### 2. Errors Are First-Class - Not Exceptions
 
