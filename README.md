@@ -1,4 +1,3 @@
-
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -351,36 +350,17 @@ except (requests.RequestException, TimeoutError) as e:
 ```
 
 ```ripple
-// Ripple: Explicit recursion with error propagation
+// Ripple: Retry logic as a task combinator
 @wait_for_healthy := server health_url max_retries ->
-  @wait_helper server health_url max_retries 0
-
-@wait_helper := server health_url max_retries attempt ->
-  attempt < max_retries |> match ->
-    false -> 
-      err("Server did not become healthy after " + max_retries + " attempts")
-    true ->
-      @check_health server health_url |> match ->
-        ok(_, _) -> 
-          ok(none)
-        err(msg, _) ->
-          attempt < (max_retries - 1) |> match ->
-            true ->
-              @Time.sleep 3000
-              @wait_helper server health_url max_retries (attempt + 1)
-            false ->
-              err("Timeout: " + msg)
-
-@check_health := server health_url ->
-  @Net.get ("http://" + server + health_url) {timeout: 5}
-    |> @Map.parse_json _
-    |> match ->
-         ok(data, _) ->
-           data.status == "healthy" |> match ->
-             true -> ok(none)
-             false -> err("Server reports: " + data.status)
-         err(msg, _) ->
-           err("Health check failed: " + msg)
+  check := ->
+    @Net.get ("http://" + server + health_url) {timeout: 5}
+      |> @Map.parse_json _
+      |> @Result.ensure (data -> data.status == "healthy") "Server not healthy"
+  
+  @Task.retry check {
+    max_attempts: max_retries,
+    delay: 3000
+  }
 
 // Usage: inline error handling
 @wait_for_healthy server health_url 10
