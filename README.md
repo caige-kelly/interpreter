@@ -1,3 +1,4 @@
+
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -302,24 +303,13 @@ except subprocess.TimeoutExpired:
 **Ripple - errors flow with logic:**
 ```ripple
 @deploy_to_server := server user app_name version ->
-  commands := [
-    "ssh " + user + "@" + server + " 'sudo systemctl stop " + app_name + "'",
-    "scp ./dist/" + app_name + "-" + version + ".tar.gz " + user + "@" + server + ":/tmp/",
-    "ssh " + user + "@" + server + " 'cd /opt/" + app_name + " && tar -xzf /tmp/" + app_name + "-" + version + ".tar.gz'",
-    "ssh " + user + "@" + server + " 'sudo systemctl start " + app_name + "'",
+  [
+    -> @Process.run ("ssh " + user + "@" + server + " 'sudo systemctl stop " + app_name + "'") {timeout: 30},
+    -> @Process.run ("scp ./dist/" + app_name + "-" + version + ".tar.gz " + user + "@" + server + ":/tmp/") {timeout: 30},
+    -> @Process.run ("ssh " + user + "@" + server + " 'cd /opt/" + app_name + " && tar -xzf /tmp/" + app_name + "-" + version + ".tar.gz'") {timeout: 30},
+    -> @Process.run ("ssh " + user + "@" + server + " 'sudo systemctl start " + app_name + "'") {timeout: 30},
   ]
-  
-  commands
-    |> @List.fold_until none (acc, cmd ->
-         @Process.run cmd {timeout: 30}
-           |> match ->
-                ok(result, _) ->
-                  result.exit_code == 0 |> match ->
-                    true -> {continue: none}
-                    false -> {stop: err("Command failed: " + result.stderr)}
-                err(msg, _) ->
-                  {stop: err(msg)}
-       )
+    |> @List.try_sequence _
 
 // Usage: error handling flows inline
 @deploy_to_server server user app_name version
