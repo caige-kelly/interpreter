@@ -1,4 +1,3 @@
-
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -35,7 +34,7 @@ data :=
 
 **Explicit error handling.** Choose monadic (`@`) or tolerant (`#`) semantics at the call site.
 
-**Immutable by default.** Rebinding creates new bindings; no reassignment.
+**Immutable. No rebinding.** Once bound, names cannot be reused—use pipelines for transformations.
 
 **Pipelines first.** Data flows through transformations via `|>`.
 
@@ -165,8 +164,8 @@ result :=
 
 - **No `if/else`** - Pattern matching replaces conditionals
 - **No exceptions** - Errors are values in Result types
-- **No variable shadowing** - Different values need different names (use pipelines)
-- **No reassignment** - Rebinding creates new bindings
+- **No variable shadowing** - Once bound, a name cannot be reused
+- **No reassignment** - All values are immutable
 - **Parentheses only for grouping** - Not for function calls
 
 ### Operator Overview
