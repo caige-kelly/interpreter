@@ -86,7 +86,8 @@ fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
         .identifier => |name| evalIdentifier(state, name),
         .assignment => |assign| try evalAssignment(state, assign),
         .binary => |bin| try evalBinary(state, bin),
-        else => error.ExpressionDontExist,
+        .unary => |un| try evalUnary(state,un),
+        //else => error.ExpressionDontExist,
     };
 }
 
@@ -177,6 +178,23 @@ fn evalComparison(left: Value, right: Value, op: TokenType) EvalError!Value {
     };
     
     return Value{ .boolean = result };
+}
+
+fn evalUnary(state: *EvalState, un: Ast.UnaryExpr) EvalError!Value {
+    // First, evaluate the operand (it could be any expression!)
+    const operand = try evalExpr(state, un.operand.*);
+    
+    return switch (un.operator) {
+        .MINUS => blk: {
+            if (operand != .number) return error.TypeMismatch;
+            break :blk Value{ .number = -operand.number };
+        },
+        .BANG => blk: {
+            if (operand != .boolean) return error.TypeMismatch;
+            break :blk Value{ .boolean = !operand.boolean };
+        },
+        else => error.ExpressionDontExist,
+    };
 }
 
 fn evalLiteral(lit: Ast.Literal) Value {
@@ -494,4 +512,438 @@ test "evaluate string inequality" {
 
     try testing.expect(result.value == .boolean);
     try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate negative number literal" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := -42";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, -42.0), result.value.number);
+}
+
+test "evaluate negative number in expression" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 5 + -3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 2.0), result.value.number);
+}
+
+test "evaluate very small float" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 0.0000001";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 0.0000001), result.value.number);
+}
+
+test "evaluate very large number" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 999999999999.99";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 999999999999.99), result.value.number);
+}
+
+test "evaluate subtraction associativity" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 10 - 5 - 2";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    // Should be left-to-right: (10 - 5) - 2 = 3
+    try testing.expectEqual(@as(f64, 3.0), result.value.number);
+}
+
+test "evaluate division associativity" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 20 / 4 / 2";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    // Should be left-to-right: (20 / 4) / 2 = 2.5
+    try testing.expectEqual(@as(f64, 2.5), result.value.number);
+}
+
+test "evaluate empty string" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("", result.value.string);
+}
+
+test "evaluate empty string concatenation" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"\" + \"hello\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("hello", result.value.string);
+}
+
+test "evaluate string with escape sequences" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"hello\\nworld\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("hello\nworld", result.value.string);
+}
+
+test "evaluate string with tab escape" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"name:\\tvalue\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("name:\tvalue", result.value.string);
+}
+
+test "evaluate string with escaped quote" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"say \\\"hello\\\"\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("say \"hello\"", result.value.string);
+}
+
+test "evaluate string with backslash" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"path\\\\to\\\\file\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("path\\to\\file", result.value.string);
+}
+
+
+test "error on adding string to number" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 5 + \"hello\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.TypeMismatch, result);
+}
+
+test "error on multiplying strings" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := \"hello\" * \"world\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.TypeMismatch, result);
+}
+
+test "error on comparing string to number" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 5 < \"hello\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.TypeMismatch, result);
+}
+
+test "error on undefined variable" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := y + 1";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.UndefinedVariable, result);
+}
+
+test "error on undefined variable in comparison" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := unknown > 5";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.UndefinedVariable, result);
+}
+
+test "error on variable redefinition (no shadowing allowed)" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = 
+        \\x := 10
+        \\x := 20
+    ;
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.VariableAlreadyDefined, result);
+}
+
+test "error on shadowing with expression" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = 
+        \\count := 1
+        \\count := count + 1
+    ;
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.VariableAlreadyDefined, result);
+}
+
+test "error on shadowing with different type" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = 
+        \\x := 42
+        \\x := "now a string"
+    ;
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
+    
+    try testing.expectError(error.VariableAlreadyDefined, result);
+}
+
+test "equality of different types returns false" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 5 == \"5\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == false);
+}
+
+test "inequality of different types returns true" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 5 != \"5\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "boolean equality" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := true == true";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "boolean inequality" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := true != false";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "none equality" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := none == none";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate negation of variable" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = 
+        \\y := 10
+        \\x := -y
+    ;
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, -10.0), result.value.number);
 }

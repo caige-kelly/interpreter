@@ -14,33 +14,29 @@ pub const Program = struct {
     }
 };
 
+
 pub const Expr = union(enum) {
     literal: Literal,
     identifier: []const u8,
-    map: MapExpr,
-    list: ListExpr,
     binary: BinaryExpr,
-    call: CallExpr,
-    lambda: LambdaExpr,
+    unary: UnaryExpr,        // Add this line
     assignment: AssignExpr,
-    pipe: PipeExpr,
-    try_expr: TryExpr,
-    match_expr: MatchExpr,
-    or_expr: OrExpr,
-    then_expr: ThenExpr,
-    tap_expr: TapExpr,
-
+    
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .assignment => |*assign| {
+            .binary => |bin| {
+                bin.left.deinit(allocator);
+                bin.right.deinit(allocator);
+                allocator.destroy(bin.left);
+                allocator.destroy(bin.right);
+            },
+            .unary => |un| {             // Add this case
+                un.operand.deinit(allocator);
+                allocator.destroy(un.operand);
+            },
+            .assignment => |assign| {
                 assign.value.deinit(allocator);
                 allocator.destroy(assign.value);
-            },
-            .binary => |*bin| {
-                bin.left.deinit(allocator);
-                allocator.destroy(bin.left);
-                bin.right.deinit(allocator);
-                allocator.destroy(bin.right);
             },
             else => {},
         }
@@ -55,6 +51,12 @@ pub const Literal = union(enum) {
     boolean: bool,
     none: void,
 };
+
+pub const UnaryExpr = struct {
+    operator: TokenType,
+    operand: *Expr,
+};
+
 
 pub const MapExpr = struct {
     pairs: []MapPair,

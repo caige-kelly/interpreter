@@ -8,16 +8,25 @@
 
 ### Implemented ✅
 - **Lexer:** Functional style, complete tokenization
+  - Numbers (int/float, including negative)
+  - Strings (with escape sequences: `\n`, `\t`, `\"`, `\\`)
+  - Booleans (`true`, `false`)
+  - Keywords (`none`, `match`, `try`, `or`, `then`, `tap`)
+  - All operators
 - **Parser:** Functional style with precedence climbing
+  - Binary operators with correct precedence
+  - Unary operators (`-`, `!`)
+  - Assignments (no shadowing allowed)
 - **Evaluator:** Functional style with type-aware operators
+  - Arithmetic: `+`, `-`, `*`, `/` (numbers and string concatenation)
+  - Comparisons: `==`, `!=`, `<`, `<=`, `>`, `>=`
+  - Unary: `-` (negate numbers), `!` (negate booleans)
+  - Type checking with clear error messages
 - **Supervisor:** Arena-based with proper trace handling
-- **Basic operators:** `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=`
-- **Types:** numbers, strings, booleans, none
-- **String operations:** equality, concatenation
-- **Tests:** 30 passing, zero memory leaks
+- **Tests:** 56 passing, zero memory leaks
 
 ### Next to Implement 🔨
-- **Functions/Lambdas:** `add := x, y -> x + y` (or `|x, y|` - syntax TBD)
+- **Functions/Lambdas:** `add := x, y -> x + y` (syntax TBD: `x ->` vs `|x|`)
 - **Function calls:** `add 10 32`
 - **Lists:** `[1, 2, 3]`
 - **Maps:** `{id: 42, name: "alice"}`
@@ -477,7 +486,15 @@ test "feature name" {
 ```
 
 ### Current Test Status
-**30 tests passing, 0 memory leaks**
+**56 tests passing, 0 memory leaks**
+
+**Test coverage:**
+- ✅ Lexer: tokenization of all operators, literals, keywords
+- ✅ Parser: precedence, binary/unary expressions, assignments
+- ✅ Evaluator: arithmetic, comparisons, type checking, string ops
+- ✅ Supervisor: retries, trace collection, memory management
+- ✅ Edge cases: empty strings, escape sequences, negative numbers, type mismatches
+- ✅ Error handling: undefined variables, type mismatches, division by zero, no shadowing
 
 ---
 
@@ -485,12 +502,46 @@ test "feature name" {
 
 ### Working Now ✅
 ```ripple
+// Variables
 x := 10                    // Inferred assignment
 name: string = "alice"     // Explicit type (rare)
-result := 3 * 4            // Arithmetic
-comparison := x > 5        // Comparisons
-greeting := "hi" + " there" // String concatenation
-equal := "a" == "a"        // Equality
+
+// Arithmetic
+result := 3 * 4            // Multiplication
+sum := 2 + 3               // Addition
+diff := 10 - 5             // Subtraction
+quotient := 10 / 2         // Division
+
+// Negative numbers
+x := -42                   // Negative literal
+y := 5 + -3                // Negative in expression
+z := -x                    // Negate variable
+
+// Strings
+greeting := "hello" + " world"  // Concatenation
+newline := "line1\nline2"      // Escape sequences: \n \t \" \\
+empty := ""                     // Empty string
+
+// Booleans
+is_valid := true
+is_active := false
+toggled := !is_valid       // Negation
+
+// Comparisons (return boolean)
+equal := x == y            // Equality (works for all types)
+not_equal := x != y        // Inequality
+greater := x > 5           // Greater than (numbers only)
+less_equal := x <= 10      // Less than or equal
+
+// Complex expressions
+result := 2 + 3 * 4        // Precedence: 14 (not 20)
+calc := 10 - 5 - 2         // Left-to-right: 3
+check := 5 == 5            // true
+mixed := "a" != "b"        // true
+
+// None
+nothing := none
+is_none := none == none    // true
 ```
 
 ### Next to Build 🔨
@@ -645,6 +696,88 @@ result :=
 - Pattern matching covers all boolean logic use cases
 - Simpler language
 - Philosophically consistent with functional approach
+
+### Why No Variable Shadowing?
+
+**Ripple does NOT allow variable shadowing.** Once a variable is defined, it cannot be redefined in the same scope.
+
+**Rationale:**
+1. **Pipelines eliminate the need** - Use `|>` for transformations instead
+2. **Explicitness over writability** - Different values should have different names
+3. **Catch bugs early** - Typos and accidental redefinition caught at compile time
+4. **Philosophy: "Make bugs difficult"** - Force clear, explicit code
+
+**Anti-pattern:**
+```ripple
+config := #File.read path
+config := config |> #Map.parse     // ERROR: config already defined
+config := config or #Map.new {default: true}
+```
+
+**Correct pattern:**
+```ripple
+config := #File.read path 
+  |> #Map.parse 
+  or #Map.new {default: true}
+```
+
+**Why no exception for "x := x + 1"?**
+Even simple rebinding should use pipelines or unique names:
+```ripple
+// Bad (not allowed)
+count := 1
+count := count + 1  // ERROR: count already defined
+
+// Good - explicit progression
+count := 1
+count_incremented := count + 1
+final_count := count_incremented + 1
+
+// Or use a pipeline (future)
+count := 1 |> increment |> increment
+```
+
+### Why No Parentheses for Grouping? (Yet)
+
+**Decision:** Ripple does not currently support parentheses `()` for expression grouping.
+
+**Rationale:**
+- **Minimalism:** Don't add features until proven necessary
+- **Precedence handles most cases:** Unary operators and precedence rules cover common needs
+- **Can always add later:** If users demonstrate a real need, we'll add them
+- **Philosophy:** "Explicitness > writability" - if you need complex grouping, break into steps
+
+**Known limitation:**
+```ripple
+# Cannot express: -(a - b) directly
+# Workaround: use intermediate variable
+temp := a - b
+result := -temp
+
+# Or later with functions:
+result := negate(a - b)
+```
+
+**When we'll add them:** When a user shows a real-world use case that can't be solved with:
+1. Intermediate variables
+2. Different operator ordering
+3. Function composition
+
+**Current workarounds:**
+```ripple
+# Most cases work fine without parens
+x := -5 * 3        # -15 (unary - has highest precedence)
+y := 2 + 3 * 4     # 14 (precedence: * before +)
+z := -x + -y       # Negate multiple values
+
+# Edge case: -(a - b)
+# Workaround 1: intermediate variable
+temp := a - b
+result := -temp
+
+# Workaround 2: rewrite mathematically
+result := -a + b   # Equivalent to -(a - b)
+```
 
 ---
 

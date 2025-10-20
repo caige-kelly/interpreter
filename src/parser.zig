@@ -184,13 +184,13 @@ fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
 }
 
 fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    var left = try parsePrimary(state, allocator);
+    var left = try parseUnary(state, allocator);
 
     while (state.peek().type == .STAR or state.peek().type == .SLASH) {
         const operator = state.consume();
         skipNewlines(state);
 
-        const right = try parsePrimary(state, allocator);
+        const right = try parseUnary(state, allocator);
 
         const left_ptr = try allocator.create(Ast.Expr);
         left_ptr.* = left;
@@ -208,6 +208,30 @@ fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Ex
     }
 
     return left;
+}
+
+fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    // Check for unary operators: - and !
+    if (state.peek().type == .MINUS or state.peek().type == .BANG) {
+        const operator = state.consume();
+        skipNewlines(state);
+        
+        // Recursive for multiple unary ops like --x or !-x
+        const operand = try parseUnary(state, allocator);
+        
+        const operand_ptr = try allocator.create(Ast.Expr);
+        operand_ptr.* = operand;
+        
+        return Ast.Expr{
+            .unary = .{
+                .operator = operator.type,
+                .operand = operand_ptr,
+            },
+        };
+    }
+    
+    // No unary operator, parse primary
+    return parsePrimary(state, allocator);
 }
 
 fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
