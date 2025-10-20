@@ -23,7 +23,7 @@ data :=
   #Net.get url
     |> #Map.parse _
     |> #Map.validate schema _
-    or default_value
+  or default_value
 ```
 
 ## Core Philosophy
@@ -105,7 +105,7 @@ response |> match ->
 config :=
   #File.read "./config.json"
     |> #Map.parse _
-    or #Map.new { env: "dev" }
+  or #Map.new { env: "dev" }
 
 // No explicit error handling needed - errors become none
 ```
@@ -155,7 +155,7 @@ result :=
     |> tap err(msg, _) ->
          @Slack.post ("Failed: " + msg)
     |> @Map.parse _
-    or default_response
+  or default_response
 ```
 
 ## Language Design
