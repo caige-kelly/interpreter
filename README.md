@@ -71,6 +71,8 @@ servers := @get_servers
 servers |> @List.each (s -> @deploy s)
 ```
 
+## Example
+
 ```
 
 // my_s3_sync.rip
