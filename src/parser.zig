@@ -59,7 +59,7 @@ pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
 }
 
 fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    const expr = try parseMultiplicative(state, allocator);
+    const expr = try parsEquality(state, allocator);
 
     var explicit_type: ?Type = null;
 
@@ -81,7 +81,7 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     }
 
     skipNewlines(state);
-    const value = try parseMultiplicative(state, allocator);
+    const value = try parsEquality(state, allocator);
 
     switch (expr) {
         .identifier => |name| {
@@ -97,6 +97,90 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         },
         else => return error.InvalidAssignmentTarget,
     }
+}
+
+fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    var left = try parseComparison(state, allocator);
+
+    while (state.peek().type == .EQUAL_EQUAL or state.peek().type == .BANG_EQUAL) {
+        const operator = state.consume();
+        skipNewlines(state);
+
+        const right = try parseComparison(state, allocator);
+
+        const left_ptr = try allocator.create(Ast.Expr);
+        left_ptr.* = left;
+
+        const right_ptr = try allocator.create(Ast.Expr);
+        right_ptr.* = right;
+
+        left = Ast.Expr{
+            .binary = .{
+                .left = left_ptr,
+                .operator = operator.type,
+                .right = right_ptr,
+            },
+        };
+    }
+    
+    return left;
+}
+
+fn parseComparison(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    var left = try parseBinary(state, allocator);
+
+    while (state.peek().type == .LESS or 
+           state.peek().type == .LESS_EQUAL or
+           state.peek().type == .GREATER or 
+           state.peek().type == .GREATER_EQUAL) {
+        const operator = state.consume();
+        skipNewlines(state);
+
+        const right = try parseBinary(state, allocator);
+
+        const left_ptr = try allocator.create(Ast.Expr);
+        left_ptr.* = left;
+
+        const right_ptr = try allocator.create(Ast.Expr);
+        right_ptr.* = right;
+
+        left = Ast.Expr{
+            .binary = .{
+                .left = left_ptr,
+                .operator = operator.type,
+                .right = right_ptr,
+            },
+        };
+    }
+
+    return left;
+}
+
+fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    var left = try parseMultiplicative(state, allocator);
+
+    while (state.peek().type == .PLUS or state.peek().type == .MINUS) {
+        const operator = state.consume();
+        skipNewlines(state);
+
+        const right = try parseMultiplicative(state, allocator);
+
+        const left_ptr = try allocator.create(Ast.Expr);
+        left_ptr.* = left;
+
+        const right_ptr = try allocator.create(Ast.Expr);
+        right_ptr.* = right;
+
+        left = Ast.Expr{
+            .binary = .{
+                .left = left_ptr,
+                .operator = operator.type,
+                .right = right_ptr,
+            },
+        };
+    }
+
+    return left;
 }
 
 fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {

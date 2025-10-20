@@ -119,6 +119,12 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
         },
         .PLUS => Value{ .number = left_num + right_num },
         .MINUS => Value{ .number = left_num - right_num },
+        .EQUAL_EQUAL => Value{ .boolean = left_num == right_num},
+        .BANG_EQUAL => Value{ .boolean = left_num != right_num},
+        .GREATER => Value{ .boolean = left_num > right_num},
+        .GREATER_EQUAL => Value{ .boolean = left_num >= right_num},
+        .LESS => Value{ .boolean = left_num < right_num},
+        .LESS_EQUAL => Value{ .boolean = left_num <= right_num},
         else => error.ExpressionDontExist,
     };
 }
@@ -216,4 +222,175 @@ test "evaluate with trace enabled" {
     try testing.expectEqual(@as(usize, 2), result.trace.len);
     try testing.expectEqual(@as(f64, 10.0), result.trace[0].result.number);
     try testing.expectEqual(@as(f64, 20.0), result.trace[1].result.number);
+}
+
+test "evaluate binary addition" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "sum := 2 + 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 5.0), result.value.number);
+}
+
+test "evaluate binary subtraction" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "diff := 10 - 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 7.0), result.value.number);
+}
+
+test "evaluate mixed arithmetic with correct precedence" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 2 + 3 * 4";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    // Should be 14 (3*4=12, then 2+12=14), NOT 20 (2+3=5, then 5*4=20)
+    try testing.expectEqual(@as(f64, 14.0), result.value.number);
+}
+
+test "evaluate complex arithmetic precedence" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 20 - 6 / 2 + 3 * 4";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    // Should be: 20 - (6/2) + (3*4) = 20 - 3 + 12 = 29
+    try testing.expectEqual(@as(f64, 29.0), result.value.number);
+}
+
+test "evaluate equality comparison - true" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 5 == 5";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate inequality comparison" {
+
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 5 != 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate less than comparison" {
+    
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 3 < 5";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate greater than comparison" {
+    
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 5 > 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate less than or equal comparison" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 3 <= 5";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate greater than or equal comparison" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := 5 >= 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
 }
