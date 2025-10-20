@@ -24,7 +24,7 @@ except (FileNotFoundError, json.JSONDecodeError, ValueError):
     config = default_config
 ```
 
-```ripple
+```
 // Ripple: Errors flow inline with logic
 config :=
   #File.read "./config.json"
@@ -51,12 +51,11 @@ config :=
 
 ### Variables & Types
 
-```ripple
+```
 x := 42                    // Type inferred
 name := "alice"            // Immutable by default
 active := true
 nothing := none
-user: string = "bob"       // Explicit typing allowed
 
 // No shadowing allowed - use pipelines instead
 result := 1
@@ -66,7 +65,7 @@ result := 1
 
 ### Functions
 
-```ripple
+```
 // Everything is a lambda bound to a name
 add := a, b -> a + b
 result := add 10 32        // 42
@@ -79,7 +78,7 @@ process := x ->
 
 ### Pipelines
 
-```ripple
+```
 result :=
   "hello world"
     |> #String.uppercase _
@@ -95,7 +94,7 @@ Ripple's killer feature: **caller-driven error interpretation**. The same functi
 
 #### Monadic (`@`): Explicit Error Handling
 
-```ripple
+```
 // Expose both success and error channels
 response := @Net.get "https://api.example.com/data"
 
@@ -109,7 +108,7 @@ response |> match ->
 
 #### Tolerant (`#`): Graceful Fallback
 
-```ripple
+```
 // Collapse errors to none, provide fallback
 config :=
   #File.read "./config.json"
@@ -121,7 +120,7 @@ config :=
 
 ### Result Type: Dual Channel Architecture
 
-```ripple
+```
 Result<V, E, S> = ok(V, S) | err(E, S)
 ```
 
@@ -133,7 +132,7 @@ Result<V, E, S> = ok(V, S) | err(E, S)
 
 No `if/else` statements. Use `match` for all conditional logic:
 
-```ripple
+```
 // Health check responses
 response := @check_health server health_url
 
@@ -165,7 +164,7 @@ deployment_result |> match ->
 
 Observe values in a pipeline without changing them:
 
-```ripple
+```
 result :=
   @Net.post url payload
     |> tap err(msg, _) ->
@@ -302,7 +301,7 @@ except subprocess.TimeoutExpired:
 ```
 
 **Ripple - errors flow with logic:**
-```ripple
+```
 @deploy_to_server := server user app_name version ->
   [
     -> @Process.run ("ssh " + user + "@" + server + " 'sudo systemctl stop " + app_name + "'") {timeout: 30},
@@ -351,7 +350,7 @@ except (requests.RequestException, TimeoutError) as e:
     print(f"Health check failed: {e}")
 ```
 
-```ripple
+```
 // Ripple: Retry logic as a task combinator
 @wait_for_healthy := server health_url max_retries ->
   check := ->
@@ -391,7 +390,7 @@ except ValueError as e:
     sys.exit(1)
 ```
 
-```ripple
+```
 // Ripple: Return Result type, compose naturally
 @validate_config := config ->
   required := ["servers", "app_name", "deploy_user", "health_check_url"]
