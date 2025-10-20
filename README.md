@@ -78,17 +78,16 @@ databases := ["prod", "staging", "dev"]
 
 backup_db := db ->
   Process.run ("pg_dump " + db + " > " + db + ".sql")
-    then _ -> Process.run ("gzip " + db + ".sql")
-    then _ -> S3.upload (db + ".sql.gz") "backups/"
+  then Process.run ("gzip " + db + ".sql")
+  then S3.upload (db + ".sql.gz") "backups/"
 
 results := databases 
   |> List.parallel_map backup_db {max_concurrent: 3}
 
 results |> List.partition_results |> match ->
-  all_ok(backups, meta) ->
+  ok(backups) ->
     Log.info ("Backed up " + #String.join backups ", " + " in " + meta.duration + "ms")
-  partial(succeeded, failed, meta) ->
-    Log.info ("Succeeded: " + #String.join succeeded ", ")
+  err(failed) ->
     Alert.send ("Failed: " + #String.join (failed |> List.map .db) ", ")
     // meta.traces shows exactly where each failure happened
 ```
