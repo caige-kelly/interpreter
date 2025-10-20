@@ -6,24 +6,34 @@ Ripple reimagines error handling by making failures a first-class part of your p
 
 ## Why Ripple?
 
-```ripple
-// Traditional approach: error handling obscures logic
-try {
-  const data = await fetch(url);
-  const parsed = JSON.parse(data);
-  const validated = validate(parsed);
-  return validated;
-} catch (e) {
-  logger.error(e);
-  return defaultValue;
-}
+```python
+# Python: Error handling obscures the business logic
+def load_config(path):
+    try:
+        with open(path, 'r') as f:
+            config = json.load(f)
+            if not validate_config(config):
+                return None
+            return config
+    except FileNotFoundError:
+        print(f"Config not found: {path}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"Invalid JSON: {e}")
+        return None
 
-// Ripple: errors flow naturally through tolerant pipelines
-data :=
-  #Net.get url
-    |> #Map.parse _
-    |> #Map.validate schema _
-  or default_value
+config = load_config('./config.json')
+if config is None:
+    config = default_config
+```
+
+```ripple
+// Ripple: The happy path is the code, errors flow naturally
+config :=
+  #File.read "./config.json"
+    |> #Map.parse_json _
+    |> #validate_config _
+  or default_config
 ```
 
 ## Core Philosophy
@@ -125,24 +135,31 @@ Result<V, E, S> = ok(V, S) | err(E, S)
 No `if/else` statements. Use `match` for all conditional logic:
 
 ```ripple
+// Health check responses
+response := @check_health server health_url
+
+response |> match ->
+  ok(data, meta) ->
+    @IO.stdout ("Server healthy - responded in " + meta.duration + "ms")
+  err(msg, meta) ->
+    @Slack.post ("Health check failed: " + msg)
+
 // Guards compose conditions with && and ||
-temperature |> match t ->
-  t >= 60 && t <= 80 -> "comfortable"
-  t < 32 && humidity > 0.8 -> "freezing and damp"
-  t > 90 || humidity > 0.9 -> "too hot or too humid"
-  any -> "normal"
+user |> match u ->
+  u.age >= 18 && u.has_license -> 
+    @grant_access u
+  u.age >= 16 && u.has_permit -> 
+    @grant_supervised_access u
+  any -> 
+    @deny_access u
 
-// Boolean results can be matched
-is_eligible := user.age >= 18 && user.verified
-
-is_eligible |> match ->
-  true -> @grant_access(user)
-  false -> @deny_access(user)
-
-// On Result types
-@fetch_user(id) |> match ->
-  ok(data, meta) -> data
-  err(msg, meta) -> none
+// Deployment result handling
+deployment_result |> match ->
+  ok(servers, _) ->
+    @IO.stdout ("Deployed to " + (#String.join servers ", "))
+  err(failure, _) ->
+    @IO.stderr ("Failed at server: " + failure.server)
+    @rollback failure.deployed_servers
 ```
 
 ### Side Effects with `tap`
@@ -248,35 +265,148 @@ Current focus areas:
 - Pipeline operator implementation
 - Pattern matching
 
-## Example: Real-World Pipeline
+## Example: Real-World Deployment Script
+
+**Python version with nested try/catch:**
+```python
+def deploy_to_server(server, user, app_name, version):
+    try:
+        # Stop service
+        result = subprocess.run(
+            f"ssh {user}@{server} 'sudo systemctl stop {app_name}'",
+            capture_output=True, timeout=30
+        )
+        if result.returncode != 0:
+            return False, f"Stop failed: {result.stderr}"
+        
+        # Copy files
+        result = subprocess.run(
+            f"scp ./dist/{app_name}-{version}.tar.gz {user}@{server}:/tmp/",
+            capture_output=True, timeout=30
+        )
+        if result.returncode != 0:
+            return False, f"Copy failed: {result.stderr}"
+        
+        # Extract and start
+        # ... more nested error checking
+        
+        return True, None
+    except subprocess.TimeoutExpired:
+        return False, "Command timed out"
+    except Exception as e:
+        return False, f"Unexpected error: {e}"
+```
+
+**Ripple version with explicit error flow:**
+```ripple
+@deploy_to_server := server user app_name version ->
+  commands := [
+    "ssh " + user + "@" + server + " 'sudo systemctl stop " + app_name + "'",
+    "scp ./dist/" + app_name + "-" + version + ".tar.gz " + user + "@" + server + ":/tmp/",
+    "ssh " + user + "@" + server + " 'cd /opt/" + app_name + " && tar -xzf /tmp/" + app_name + "-" + version + ".tar.gz'",
+    "ssh " + user + "@" + server + " 'sudo systemctl start " + app_name + "'",
+  ]
+  
+  commands
+    |> @List.fold_until none (acc, cmd ->
+         @Process.run cmd {timeout: 30}
+           |> match ->
+                ok(result, _) ->
+                  result.exit_code == 0 |> match ->
+                    true -> {continue: none}
+                    false -> {stop: err("Command failed: " + cmd + "\n" + result.stderr)}
+                err(msg, _) ->
+                  {stop: err("Command error: " + cmd + "\n" + msg)}
+       )
+```
+
+**Health check with retry logic:**
+```python
+# Python: Manual retry loop with state
+def wait_for_healthy(server, health_url, max_retries=10):
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(f"http://{server}{health_url}", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('status') == 'healthy':
+                    return True, None
+        except:
+            pass
+        
+        if attempt < max_retries - 1:
+            time.sleep(3)
+    
+    return False, "Server did not become healthy"
+```
 
 ```ripple
-@deploy_service := config_path ->
-  config :=
-    @File.read config_path
-      |> @Map.parse _
-      |> @Map.validate deployment_schema _
-      |> tap err(msg, _) ->
-           @Slack.post ("Invalid config: " + msg)
+// Ripple: Recursive with explicit state
+@wait_for_healthy := server health_url max_retries ->
+  @wait_helper server health_url max_retries 0
 
-  config |> match ->
-    ok(data, _) ->
-      @Net.post "https://deploy.example.com/api" data
-        |> tap ok(_, meta) ->
-             @Log.info ("Deployed in " + meta.duration)
-        |> tap err(msg, _) ->
-             @Slack.post ("Deploy failed: " + msg)
-    err(msg, _) ->
-      err("Configuration invalid: " + msg)
+@wait_helper := server health_url max_retries attempt ->
+  attempt < max_retries |> match ->
+    false -> 
+      err("Server did not become healthy after " + max_retries + " attempts")
+    true ->
+      @check_health server health_url |> match ->
+        ok(_, _) -> 
+          ok(none)
+        err(msg, _) ->
+          attempt < (max_retries - 1) |> match ->
+            true ->
+              @Time.sleep 3000
+              @wait_helper server health_url max_retries (attempt + 1)
+            false ->
+              err("Timeout: " + msg)
 
-// Caller chooses: handle errors explicitly or fail gracefully
-result := @deploy_service "./config.json"  // Returns Result - must handle
-result |> match ->
-  ok(data, _) -> #IO.stdout "Deployed successfully"
-  err(msg, _) -> #IO.stdout ("Deploy failed: " + msg)
+@check_health := server health_url ->
+  @Net.get ("http://" + server + health_url) {timeout: 5}
+    |> @Map.parse_json _
+    |> match ->
+         ok(data, _) ->
+           data.status == "healthy" |> match ->
+             true -> ok(none)
+             false -> err("Server reports: " + data.status)
+         err(msg, _) ->
+           err("Health check failed: " + msg)
+```
 
-deployment := #deploy_service "./config.json"  // Returns data | none
-deployment or default_deployment  // Provide fallback if none
+**Configuration validation:**
+```python
+# Python: Imperative checks with early returns
+def validate_config(config):
+    required = ['servers', 'app_name', 'deploy_user', 'health_check_url']
+    
+    for field in required:
+        if field not in config:
+            print(f"Missing field: {field}")
+            return False
+    
+    if not config['servers']:
+        print("No servers specified")
+        return False
+    
+    return True
+```
+
+```ripple
+// Ripple: Functional validation with descriptive errors
+@validate_config := config ->
+  required := ["servers", "app_name", "deploy_user", "health_check_url"]
+  
+  missing :=
+    required
+      |> #List.filter (field -> (#Map.get config field) == none)
+  
+  (#List.is_empty missing) |> match ->
+    false ->
+      err("Missing required fields: " + (#String.join missing ", "))
+    true ->
+      (#List.is_empty config.servers) |> match ->
+        true -> err("No servers specified")
+        false -> ok(config)
 ```
 
 ## Learn More
