@@ -136,6 +136,15 @@ do_work
 
 ### 2. Errors Are First-Class - Not Exceptions
 
+Every function returns an Result object by default that that contains value for branch ok, err for branch err and system metadata for both.
+
+Result{
+  ok(value, metadata)
+  err(error, metadata)
+
+Any function can be marked tolerent by #. Meaning it will either return value or none. 
+
+
 **Python:** Exceptions separate error handling from logic
 ```python
 try:
