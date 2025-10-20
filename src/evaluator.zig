@@ -1,5 +1,6 @@
 const std = @import("std");
 const Ast = @import("ast.zig");
+const TokenType = @import("token.zig").TokenType;
 
 pub const EvalError = error{
     UndefinedVariable,
@@ -103,30 +104,79 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
     const left = try evalExpr(state, bin.left.*);
     const right = try evalExpr(state, bin.right.*);
 
-    // Only numbers for now
-    if (left != .number or right != .number) {
-        return error.TypeMismatch;
-    }
-
-    const left_num = left.number;
-    const right_num = right.number;
-
+    // Dispatch based on operator category and operand types
     return switch (bin.operator) {
-        .STAR => Value{ .number = left_num * right_num },
-        .SLASH => blk: {
-            if (right_num == 0) return error.DivisionByZero;
-            break :blk Value{ .number = left_num / right_num };
-        },
-        .PLUS => Value{ .number = left_num + right_num },
-        .MINUS => Value{ .number = left_num - right_num },
-        .EQUAL_EQUAL => Value{ .boolean = left_num == right_num},
-        .BANG_EQUAL => Value{ .boolean = left_num != right_num},
-        .GREATER => Value{ .boolean = left_num > right_num},
-        .GREATER_EQUAL => Value{ .boolean = left_num >= right_num},
-        .LESS => Value{ .boolean = left_num < right_num},
-        .LESS_EQUAL => Value{ .boolean = left_num <= right_num},
+        // Equality operators - work on any matching types
+        .EQUAL_EQUAL, .BANG_EQUAL => evalEquality(left, right, bin.operator),
+        
+        // Arithmetic operators - type-specific behavior
+        .PLUS => evalAddition(state, left, right),
+        .MINUS => evalSubtraction(left, right),
+        .STAR => evalMultiplication(left, right),
+        .SLASH => evalDivision(left, right),
+        
+        // Comparison operators - numbers only
+        .LESS, .LESS_EQUAL, .GREATER, .GREATER_EQUAL => evalComparison(left, right, bin.operator),
+        
         else => error.ExpressionDontExist,
     };
+}
+
+fn evalEquality(left: Value, right: Value, op: TokenType) EvalError!Value {
+    const are_equal = switch (left) {
+        .number => |l| if (right == .number) l == right.number else false,
+        .string => |l| if (right == .string) std.mem.eql(u8, l, right.string) else false,
+        .boolean => |l| if (right == .boolean) l == right.boolean else false,
+        .none => right == .none,
+    };
+    
+    return Value{ .boolean = if (op == .EQUAL_EQUAL) are_equal else !are_equal };
+}
+
+fn evalAddition(state: *EvalState, left: Value, right: Value) EvalError!Value {
+    return switch (left) {
+        .number => |l| blk: {
+            if (right != .number) return error.TypeMismatch;
+            break :blk Value{ .number = l + right.number };
+        },
+        .string => |l| blk: {
+            if (right != .string) return error.TypeMismatch;
+            // Concatenate strings
+            const result = try std.fmt.allocPrint(state.allocator, "{s}{s}", .{ l, right.string });
+            break :blk Value{ .string = result };
+        },
+        else => error.TypeMismatch,
+    };
+}
+
+fn evalSubtraction(left: Value, right: Value) EvalError!Value {
+    if (left != .number or right != .number) return error.TypeMismatch;
+    return Value{ .number = left.number - right.number };
+}
+
+fn evalMultiplication(left: Value, right: Value) EvalError!Value {
+    if (left != .number or right != .number) return error.TypeMismatch;
+    return Value{ .number = left.number * right.number };
+}
+
+fn evalDivision(left: Value, right: Value) EvalError!Value {
+    if (left != .number or right != .number) return error.TypeMismatch;
+    if (right.number == 0) return error.DivisionByZero;
+    return Value{ .number = left.number / right.number };
+}
+
+fn evalComparison(left: Value, right: Value, op: TokenType) EvalError!Value {
+    if (left != .number or right != .number) return error.TypeMismatch;
+    
+    const result = switch (op) {
+        .LESS => left.number < right.number,
+        .LESS_EQUAL => left.number <= right.number,
+        .GREATER => left.number > right.number,
+        .GREATER_EQUAL => left.number >= right.number,
+        else => unreachable,
+    };
+    
+    return Value{ .boolean = result };
 }
 
 fn evalLiteral(lit: Ast.Literal) Value {
@@ -384,6 +434,57 @@ test "evaluate greater than or equal comparison" {
     defer arena.deinit();
 
     const source = "result := 5 >= 3";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate string equality" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := \"hello\" == \"hello\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .boolean);
+    try testing.expect(result.value.boolean == true);
+}
+
+test "evaluate string concatenation" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := \"hello\" + \" world\"";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expect(result.value == .string);
+    try testing.expectEqualStrings("hello world", result.value.string);
+}
+
+test "evaluate string inequality" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "result := \"hello\" != \"world\"";
     const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();

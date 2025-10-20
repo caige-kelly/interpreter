@@ -1,47 +1,404 @@
-# Ripple Language - Project Handoff (Updated After Refactoring)
+# Ripple Language - Project Handoff (v2.0)
 
-## Project Status
-- **Lexer:** ✅ Complete - Functional style
-- **Parser:** ✅ Complete - Functional style, supports binary operators (`*`, `/`)
-- **Evaluator:** ✅ Complete - Functional style, supports binary operators
-- **Supervisor:** ✅ Complete - Arena-based with proper trace handling
-- **Tests:** ✅ All passing, zero memory leaks
-- **Architecture:** ✅ Refactored to functional style with arena allocators
-- **Type Checker:** ❌ Not started
-- **VM with Bytecode:** ❌ Not started (future)
+**Source of Truth:** Reference script (v5.0) - included in project documents
 
 ---
 
-## Major Architectural Change: Functional Style
+## Project Status
 
-All components refactored from OO to functional style:
+### Implemented ✅
+- **Lexer:** Functional style, complete tokenization
+- **Parser:** Functional style with precedence climbing
+- **Evaluator:** Functional style with type-aware operators
+- **Supervisor:** Arena-based with proper trace handling
+- **Basic operators:** `+`, `-`, `*`, `/`, `==`, `!=`, `<`, `<=`, `>`, `>=`
+- **Types:** numbers, strings, booleans, none
+- **String operations:** equality, concatenation
+- **Tests:** 30 passing, zero memory leaks
 
-### Before (OO):
-```zig
-var lexer = try Lexer.init(source, allocator);
-defer lexer.deinit();
-const tokens = try lexer.tokenize();
+### Next to Implement 🔨
+- **Functions/Lambdas:** `add := x, y -> x + y` (or `|x, y|` - syntax TBD)
+- **Function calls:** `add 10 32`
+- **Lists:** `[1, 2, 3]`
+- **Maps:** `{id: 42, name: "alice"}`
 
-var parser = try Parser.init(tokens, allocator);
-defer parser.deinit();
-const program = try parser.parse();
+### Designed but Not Implemented ⏳
+- **Pipeline operator:** `|>`
+- **Result type:** `Result<T, E, S>` with dual channels (user + system)
+- **Domain markers:** `@` (monadic) vs `#` (tolerant)
+- **Error handling operators:** `or`, `then`, `tap`
+- **Match expressions:** pattern matching instead of if/else
+- **Standard library:** File, Map, Net, IO, etc.
+
+### Not Planned ❌
+- Boolean operators: `and`, `or`, `not` (use match instead)
+- If/else statements (use match expressions)
+- While loops (use recursion or pipelines)
+
+---
+
+## Language Philosophy
+
+**Ripple is a functional, pipeline-oriented language with explicit error handling.**
+
+### Core Principles
+1. **No if/else** - Use pattern matching via `match`
+2. **No boolean operators** - Match expressions replace boolean logic
+3. **Explicit error handling** - Result type with dual channels (user + system)
+4. **Immutable by default** - Rebinding creates new bindings (shadowing)
+5. **Clean syntax** - Minimal symbols, relying on IDE for type information
+6. **Pipelines first** - Data flows through transformations via `|>`
+
+### Design Philosophy: Language + IDE Partnership
+- Syntax is intentionally clean (like Python)
+- Type rigor provided by IDE tooling (like Haskell)
+- Hover to see inferred types
+- IDE marks `@` vs `#` functions differently
+- Verbose tracing available via IDE plugin
+
+---
+
+## Type System
+
+### Fundamental Types
+```ripple
+x := 42                    // number (int precision)
+y := 3.14                  // number (float)
+name := "alice"            // string
+active := true             // bool
+nothing := none            // none type
 ```
 
-### After (Functional):
-```zig
-const tokens = try tokenize(source, allocator);
-const program = try parse(tokens, allocator);
-// No deinit needed - arena handles everything
+**Note:** `number` unifies int/float (preserves int precision when possible)
+
+### Composite Types
+```ripple
+numbers := [1, 2, 3]       // [T] - list of T
+user := {                   // {key: T} - map
+  id: 42,
+  name: "alice"
+}
 ```
 
-**Why:** Simpler, clearer ownership, matches functional language philosophy.
+### Result Type (Core to Error Handling)
+```ripple
+Result<V, E, S> = ok(V, S) | err(E, S)
+```
+
+**Dual channel structure:**
+- **user channel:** `V` or `E` - the semantic value (what your code cares about)
+- **sys channel:** `S` - system metadata (duration, status, retries, etc.)
+
+**Shorthands:**
+```ripple
+ok(v)        ≡ ok(v, none)      // Success with value, no metadata
+ok(_, s)     ≡ ok(none, s)      // Success with metadata only
+err(v)       ≡ err(v, none)     // Error with message
+err(_, s)    ≡ err(none, s)     // Error with metadata only
+```
+
+---
+
+## Domain Markers: @ vs #
+
+**Critical Language Feature:** Functions are marked at definition to declare error handling semantics.
+
+### @ - Monadic Domain
+Returns `Result<T, E>` - caller must handle both success and failure channels.
+
+```ripple
+@fetch_user := id ->
+  @Net.get ("https://api.example.com/users/" + id)
+    |> @Map.parse _
+    |> @Map.translate default _ { id: id, name: name }
+
+// Caller handles Result explicitly
+result := @fetch_user 123
+result |> match ->
+  ok(user, meta) ->
+    #IO.stdout ("Fetched: " + user.name)
+  err(msg, meta) ->
+    @Slack.post ("Error: " + msg)
+```
+
+### # - Tolerant Domain
+Returns `value | none` - errors are suppressed, returns none on failure.
+
+```ripple
+#load_config := path ->
+  #File.read path
+    |> #Map.parse _
+    or #Map.new { env: "dev" }
+
+// Caller gets value or none (no explicit error handling needed)
+config := #load_config "./config.json"
+```
+
+### Result Interpretation (Caller-Driven)
+Standard library returns `Result<T, E>` by default. Caller chooses interpretation:
+
+```ripple
+// Monadic: Use @ to expose both channels
+response := @Net.get "https://example.com/api"
+
+// Tolerant: Use # to collapse to value | none
+data := #Net.get "https://example.com/api"
+// If success: data = body
+// If failure: data = none
+```
+
+---
+
+## Variables & Immutability
+
+### Type Inference (Default - 90% of use)
+```ripple
+x := 42                    // Inferred as number
+name := "alice"            // Inferred as string
+```
+
+### Explicit Type Annotation (Rare - for clarity)
+```ripple
+result: Result<User, Error> =
+  @Net.get url
+    |> @Map.parse _
+    |> @Map.validate schema _
+```
+
+### Shadowing (Rebinding)
+```ripple
+count := 1
+count := count + 1         // Shadows previous, now 2
+count := count * 2         // Shadows again, now 4
+```
+
+**All variables are immutable.** Rebinding with `:=` creates new binding; old is unreachable.
+
+---
+
+## Functions
+
+**Everything is a lambda bound to a name.** No `fn` keyword.
+
+### Simple Functions
+```ripple
+add := a, b -> a + b
+result := add 10 32        // result = 42
+```
+
+### Multi-line Functions
+```ripple
+process := x ->
+  y := x + 1
+  z := y * 2
+  z                        // Implicit return of last expression
+```
+
+### Functions with Type Annotations (Optional)
+```ripple
+multiply := x: number, y: number ->
+  x * y
+```
+
+### Monadic Functions (@ domain)
+```ripple
+@fetch_user := id ->
+  @Net.get ("https://api.example.com/users/" + id)
+    |> @Map.parse _
+    |> @Map.translate default _ { id: id, name: name }
+```
+
+### Tolerant Functions (# domain)
+```ripple
+#load_config := path ->
+  #File.read path
+    |> #Map.parse _
+    or #Map.new { env: "dev" }
+```
+
+**Note:** Lambda parameter syntax is TBD: `x ->` vs `|x|` (to be determined during implementation)
+
+---
+
+## Operators
+
+### Implemented ✅
+
+#### Arithmetic
+```ripple
+sum := 2 + 3               // number + number
+diff := 10 - 5             // number - number
+product := 3 * 4           // number * number
+quotient := 10 / 2         // number / number (errors on divide by zero)
+```
+
+#### String Concatenation
+```ripple
+greeting := "hello" + " world"    // string + string
+```
+
+#### Comparisons (Numbers only, returns boolean)
+```ripple
+equal := 5 == 5            // true
+not_equal := 5 != 3        // true
+less := 3 < 5              // true
+less_equal := 3 <= 3       // true
+greater := 5 > 3           // true
+greater_equal := 5 >= 5    // true
+```
+
+#### Equality (Works on any matching types)
+```ripple
+num_equal := 5 == 5                    // true
+str_equal := "hello" == "hello"        // true
+bool_equal := true == true             // true
+type_mismatch := 5 == "5"              // false (different types)
+```
+
+### To Be Implemented ⏳
+
+#### Pipeline Operator
+```ripple
+result :=
+  "hello world"
+    |> #String.uppercase _
+    |> #String.split " "
+```
+
+#### or - Fallback for none (Monoid identity: none)
+```ripple
+config :=
+  #File.read "./optional.json"
+    or #Map.new { default: true }
+```
+
+#### then - Sequencing (only if left is not none)
+```ripple
+result :=
+  #File.read "./required.json"
+    then #Map.parse _
+    then #Map.validate schema _
+```
+
+#### tap - Observational Side Effects
+```ripple
+// Observe errors without changing the value
+result :=
+  @Net.post url payload
+    |> tap err(msg, meta) ->
+         @Slack.post ("Error: " + msg)
+    or #Map.new { status: "failed" }
+
+// Observe success
+data :=
+  @Net.get url
+    |> tap ok(body, meta) ->
+         @IO.stdout ("Fetched: " + body)
+    |> @Map.parse _
+```
+
+**tap algebra:**
+- `tap f (ok(u, s)) = ok(u, s)` - Returns original ok unchanged
+- `tap f (err(u, s)) = f(u, s) then err(u, s)` - Runs side effect, returns original err
+
+---
+
+## Pattern Matching
+
+**Replaces if/else statements entirely.**
+
+### Match on Result
+```ripple
+response :=
+  @Net.get "https://example.com/status"
+    |> match ->
+         ok(body, meta) ->
+           "Service healthy: " + body.status
+         err(msg, meta) ->
+           "Service down: " + msg
+```
+
+### Match on Values
+```ripple
+status := "active"
+message :=
+  status |> match ->
+    "active" -> "Running"
+    "paused" -> "Paused"
+    any -> "Unknown"
+```
+
+### Match Syntax
+```ripple
+value |> match ->
+  pattern1 -> result1
+  pattern2 -> result2
+  any -> default_result
+```
+
+**No `|` before patterns** - just indentation and `->` arrows.
+
+---
+
+## Collections
+
+### Lists
+```ripple
+numbers := [1, 2, 3, 4, 5]
+empty_list := []
+
+nested := [
+  [1, 2],
+  [3, 4]
+]
+```
+
+### Maps
+```ripple
+user := {
+  id: 42,
+  name: "alice",
+  email: "alice@example.com"
+}
+
+empty_map := {}
+
+// Map access (returns none if key missing)
+user_name := #Map.get user "name"    // "alice" or none
+user_name or "unknown"
+```
+
+---
+
+## Program Supervision & Tracing
+
+### Verbosity Levels
+```ripple
+#Program.verbosity = "quiet"      // No trace logs
+#Program.verbosity = "normal"     // Standard logs
+#Program.verbosity = "verbose"    // Log EVERY expression
+```
+
+### Trace Format (verbose mode)
+```
+line :: binding :: function/operator :: user_value :: system_value
+```
+
+**Example trace lines:**
+```
+15 :: config :: #File.read :: "..." :: {duration: 2ms}
+28 :: _ :: @Net.get :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
+29 :: _ :: tap :: ok(...) :: {side_effect: "slack_posted"}
+30 :: deploy :: or :: {status: "skipped"} :: {source: "fallback"}
+```
+
+**Traces are observational only** - they do NOT affect execution semantics.
 
 ---
 
 ## Memory Management Strategy
 
-### Arena Per Execution (Standard Pattern)
-
+### Arena Per Execution
 ```zig
 fn attemptRun(source: []const u8) !RunAttempt {
     var arena = ArenaAllocator.init(self.allocator);
@@ -60,201 +417,57 @@ fn attemptRun(source: []const u8) !RunAttempt {
     return RunAttempt{
         .trace = trace_copy,  // Lives in self.allocator
         .value = eval_result.value,
-        // ...
     };
 }
 ```
 
-**Key Pattern:**
-- **Arena** = temporary allocations (tokens, AST, eval state)
+**Pattern:**
+- **Arena** = temporary (tokens, AST, eval state)
 - **Permanent allocator** = results that outlive execution (traces, values)
 - **Copy** between them when needed
 
 ---
 
-## Current Implementation
+## Current Implementation Details
 
-### 1. Lexer (lexer.zig) - Functional
+### Architecture: Functional Style
 
+**Before (OO):**
 ```zig
-pub fn tokenize(source: []const u8, allocator: Allocator) ![]Token
+var lexer = try Lexer.init(source, allocator);
+defer lexer.deinit();
+const tokens = try lexer.tokenize();
 ```
 
-**Features:**
-- Functional style (no state struct with methods)
-- Internal `LexState` for tracking position
-- Indentation tracking (INDENT/DEDENT tokens)
-- All operators: `+`, `-`, `*`, `/`, `==`, `!=`, `:=`, `|>`, etc.
-- String literals with escape sequences
-- Comments (`//`)
-
-**Tests:** 4 passing (numbers, assignments, multiplication, strings)
-
----
-
-### 2. Parser (parser.zig) - Functional
-
+**After (Functional):**
 ```zig
-pub fn parse(tokens: []const Token, allocator: Allocator) !Program
+const tokens = try tokenize(source, allocator);
+// No deinit needed - arena handles everything
 ```
 
-**Features:**
-- Functional style (no Parser struct)
-- Internal `ParseState` for tracking position
-- Precedence climbing for binary operators
-- Supports: assignments, literals, identifiers, binary expressions (`*`, `/`)
+### File Structure
 
-**Current Precedence Chain:**
-```
-parseAssignment()
-  → parseMultiplicative()  ✅ (* /)
-    → parsePrimary()       ✅ (literals, identifiers)
-```
+#### Clean and Working ✅
+- `lexer.zig` - Functional, tokenizes all operators
+- `parser.zig` - Functional, precedence climbing
+- `evaluator.zig` - Functional, type-aware operators
+- `supervisor.zig` - OO (stateful orchestration)
+- `ast.zig` - Data structures with deinit methods
+- `token.zig` - Token definitions
+- `error.zig` - Error reporting
+- `build.zig` - Build configuration
 
-**Tests:** 1 passing (multiplication in assignment)
-
----
-
-### 3. Evaluator (evaluator.zig) - Functional
-
-```zig
-pub fn evaluate(
-    program: Program,
-    allocator: Allocator,
-    config: EvalConfig,
-) !EvaluationResult
-
-pub const EvaluationResult = struct {
-    value: Value,
-    trace: []const TraceEntry,
-    allocator: Allocator,
-
-    pub fn deinit(self: *EvaluationResult) void;
-};
-```
-
-**Features:**
-- Functional style (no Evaluator struct)
-- Internal `EvalState` for globals and trace
-- Supports: literals, identifiers, assignments, binary operators (`*`, `/`, `+`, `-`)
-- Optional trace collection
-- Type checking (numbers only for operators)
-- Division by zero detection
-
-**Tests:** 5 passing (literals, undefined vars, multiplication, division, trace)
-
----
-
-### 4. Supervisor (supervisor.zig) - OO Style (Intentional)
-
-```zig
-pub const Supervisor = struct {
-    allocator: Allocator,
-    config: SupervisorConfig,
-
-    pub fn run(self: *Supervisor, source: []const u8) !SupervisionResult;
-    fn attemptRun(self: *Supervisor, source: []const u8) !RunAttempt;
-};
-```
-
-**Why still OO?** Supervisor maintains state (config, allocator) and orchestrates multiple attempts. Makes sense as a stateful object.
-
-**Features:**
-- Arena-based execution (temp data freed after each attempt)
-- Retry logic (eval errors only, not parse errors)
-- Trace copying to permanent memory
-- Duration measurement
-- Success/failure status tracking
-
-**Tests:** 6 passing (success, eval error, parse error, retries, multiplication)
-
----
-
-## What Works Right Now
-
-### Complete Pipeline
-
-```ripple
-result := 3 * 4
-```
-
-**Execution flow:**
-1. **Tokenize:** `IDENTIFIER`, `COLON_EQUAL`, `NUMBER`, `STAR`, `NUMBER`, `EOF`
-2. **Parse:** `Assignment{ name: "result", value: Binary{ STAR, 3, 4 } }`
-3. **Evaluate:** `12.0`
-4. **Supervise:** Success on first attempt, trace collected
-
-**All memory properly managed, zero leaks.**
-
----
-
-## Key Design Decisions
-
-### 1. Functional vs OO
-
-**Functional (lexer, parser, evaluator):**
-- ✅ Simple operations (input → output)
-- ✅ No persistent state needed
-- ✅ Easier to test (pure functions)
-
-**OO (supervisor):**
-- ✅ Stateful orchestration
-- ✅ Configuration management
-- ✅ Multiple method coordination
-
-### 2. Arena for Temporary, GPA for Permanent
-
-**Why:**
-- Temporary data (tokens, AST) dies together → arena perfect
-- Permanent data (traces, results) lives longer → explicit allocation
-- Clear separation of lifetimes
-- No manual cleanup of temporaries
-
-### 3. Trace Ownership
-
-**Pattern:**
-```zig
-// Evaluator allocates trace in arena
-var eval_result = try evaluate(program, arena.allocator(), config);
-defer eval_result.deinit();  // Frees trace in arena
-
-// Supervisor copies to permanent memory
-const trace_copy = try self.allocator.alloc(TraceEntry, eval_result.trace.len);
-@memcpy(trace_copy, eval_result.trace);
-```
-
-**Caller owns returned memory, must free it.**
-
-### 4. Program/Expr Keep deinit Methods
-
-**Why:**
-- Flexibility for non-arena usage (REPL, caching, hot-reload)
-- Calling `deinit()` with arena is harmless (no-op)
-- Future-proof for features we haven't designed yet
-- User experience > implementation simplicity
-
-**Pattern:**
-```zig
-var arena = ArenaAllocator.init(allocator);
-defer arena.deinit();
-
-var program = try parse(tokens, arena.allocator());
-defer program.deinit();  // Harmless with arena, required without
-```
-
----
-
-## Testing Pattern (Standardized)
-
+### Test Pattern (Standardized)
 ```zig
 test "feature name" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();  // Only cleanup needed
+    defer arena.deinit();
 
-    const tokens = try tokenize(source, arena.allocator());
-    var program = try parse(tokens, arena.allocator());
-    defer program.deinit();  // Explicit, even though arena handles it
+    const source = "x := 42";
+    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
 
     var result = try evaluate(program, arena.allocator(), .{});
     defer result.deinit();
@@ -263,175 +476,412 @@ test "feature name" {
 }
 ```
 
-**All tests passing, zero memory leaks.**
+### Current Test Status
+**30 tests passing, 0 memory leaks**
 
 ---
 
-## What's Next
+## Language Features
 
-### Immediate: Add More Binary Operators
-
-**Current:** `*`, `/` (multiplication, division)
-**Next:** `+`, `-` (addition, subtraction)
-
-**Parser needs:**
-```zig
-fn parseAdditive(state: *ParseState, allocator: Allocator) !Expr {
-    var left = try parseMultiplicative(state, allocator);
-
-    while (state.peek().type == .PLUS or state.peek().type == .MINUS) {
-        const op = state.consume();
-        const right = try parseMultiplicative(state, allocator);
-        // Build binary node
-    }
-
-    return left;
-}
+### Working Now ✅
+```ripple
+x := 10                    // Inferred assignment
+name: string = "alice"     // Explicit type (rare)
+result := 3 * 4            // Arithmetic
+comparison := x > 5        // Comparisons
+greeting := "hi" + " there" // String concatenation
+equal := "a" == "a"        // Equality
 ```
 
-**Then update precedence chain:**
-```
-parseAssignment()
-  → parseAdditive()        ← NEW
-    → parseMultiplicative()
-      → parsePrimary()
+### Next to Build 🔨
+```ripple
+// Functions
+add := a, b -> a + b       // Definition (syntax TBD: x -> vs |x|)
+result := add 10 32        // Call
+
+// Lists
+numbers := [1, 2, 3]
+first := numbers[0]
+
+// Maps
+user := {id: 42, name: "alice"}
+name := user.name
 ```
 
-### Future Features (In Order)
+### Coming Later ⏳
+```ripple
+// Pipelines
+result := data |> validate |> transform
 
-1. **Addition/Subtraction** (`+`, `-`)
-2. **Comparison operators** (`==`, `!=`, `<`, `>`, `<=`, `>=`)
-3. **Function calls** (`process(data, config)`)
-4. **Lambda expressions** (`|x| -> x * 2`)
-5. **Pipeline operator** (`|>`)
-6. **Match expressions** (pattern matching)
+// Error handling
+config :=
+  #File.read "./config.json"
+    or #Map.new {default: true}
+
+// Match expressions
+result := status |> match ->
+  "active" -> "Running"
+  "paused" -> "Paused"
+  any -> "Unknown"
+
+// Monadic error handling
+result :=
+  @Net.get url
+    |> @Map.parse _
+    |> tap err(msg, meta) ->
+         @Slack.post ("Error: " + msg)
+```
 
 ---
 
-## Lessons from Refactoring Session
+## Standard Library (Designed, Not Implemented)
 
-### What Went Well
-1. ✅ Functional style is cleaner for pure operations
-2. ✅ Arena pattern simplifies memory management dramatically
-3. ✅ All tests still pass after major refactor
-4. ✅ Zero memory leaks maintained throughout
+### File I/O
+```ripple
+@File.read := path -> Result<string, Error>
+@File.write := path data -> Result<none, Error>
+```
 
-### What Was Confusing
-1. ❌ When to use arena vs manual allocation (now clear)
-2. ❌ Ownership of traces and results (now documented)
-3. ❌ Whether to keep deinit methods (decided: keep for flexibility)
-4. ❌ OO vs functional tradeoffs (now understood)
+### Map Operations
+```ripple
+@Map.parse := text -> Result<Map, Error>
+@Map.validate := map schema -> Result<Map, Error>
+@Map.get := map key -> value | none
+@Map.new := initial_data -> Map
+```
 
-### Key Insight
-**"The runtime is a binary, not a library" doesn't mean "only one allocation strategy."**
+### Network
+```ripple
+@Net.get := url -> Result<string, Error>
+@Net.post := url data -> Result<string, Error>
+```
 
-Even internal code benefits from flexibility. Keep `deinit()` methods for:
-- Future features (REPL, caching, hot-reload)
+### String Operations
+```ripple
+#String.uppercase := text -> string
+#String.split := text sep -> [string]
+```
+
+### IO
+```ripple
+@IO.stdout := message -> Result<none, Error>
+@IO.exit := code -> Result<none, Error>
+```
+
+### Slack Integration
+```ripple
+@Slack.post := message -> Result<none, Error>
+```
+
+---
+
+## Roadmap
+
+### Phase 1: Foundation (Current)
+1. ✅ Basic types (number, string, bool, none)
+2. ✅ Arithmetic operators
+3. ✅ Comparison operators
+4. ✅ String concatenation
+5. 🔨 Functions and lambdas
+6. 🔨 Function calls
+7. 🔨 Lists
+8. 🔨 Maps
+
+### Phase 2: Core Ripple Features
+1. Pipeline operator `|>`
+2. `or` operator (fallback)
+3. `then` operator (sequencing)
+4. Basic pattern matching (match expressions)
+5. Result type (ok/err)
+
+### Phase 3: Error Handling
+1. `@` vs `#` domain markers
+2. `tap` operator (side effects)
+3. Dual-channel Result (user + sys)
+4. Error propagation
+
+### Phase 4: Standard Library
+1. File I/O
+2. Map operations
+3. Network operations
+4. String operations
+5. IO operations
+
+### Phase 5: Advanced Features
+1. Pattern matching with guards
+2. Destructuring in match
+3. List comprehensions
+4. Advanced stdlib functions
+
+---
+
+## Design Decisions
+
+### Why Functional Style?
+- ✅ Simple operations (input → output)
+- ✅ No persistent state needed
+- ✅ Easier to test (pure functions)
+- ✅ Matches language philosophy
+
+### Why OO for Supervisor?
+- ✅ Stateful orchestration
+- ✅ Configuration management
+- ✅ Multiple method coordination
+
+### Why Arena for Temporary, GPA for Permanent?
+- Temporary data (tokens, AST) dies together → arena perfect
+- Permanent data (traces, results) lives longer → explicit allocation
+- Clear separation of lifetimes
+- No manual cleanup of temporaries
+
+### Why Keep deinit Methods?
+- Flexibility for non-arena usage (REPL, caching, hot-reload)
 - Explicit ownership (clear who frees what)
 - Harmless with arena (calling deinit is a no-op)
+- Future-proof for features not yet designed
 
----
-
-## File Status
-
-### Clean and Working
-- ✅ `lexer.zig` - Functional, 4 tests passing
-- ✅ `parser.zig` - Functional, 1 test passing
-- ✅ `evaluator.zig` - Functional, 5 tests passing
-- ✅ `supervisor.zig` - OO, 6 tests passing
-- ✅ `ast.zig` - Data structures with deinit methods
-
-### Unchanged
-- ✅ `token.zig` - Token definitions
-- ✅ `error.zig` - Error reporting
-- ✅ `build.zig` - Build configuration
-
-### Total: 16 tests passing, 0 memory leaks
-
----
-
-## Quick Reference: Running Tests
-
-```bash
-# All tests
-zig build test
-
-# Individual files
-zig test src/lexer.zig
-zig test src/parser.zig
-zig test src/evaluator.zig
-zig test src/supervisor.zig
-```
+### Why No Boolean Operators?
+- Match expressions replace if/else
+- Pattern matching covers all boolean logic use cases
+- Simpler language
+- Philosophically consistent with functional approach
 
 ---
 
 ## Next Session Starter
 
-**"I'm continuing Ripple. After refactoring to functional style:**
-- ✅ Lexer, parser, evaluator are functional
-- ✅ Supervisor uses arena per execution
-- ✅ Binary operators `*` and `/` work
-- ✅ 16 tests passing, zero leaks
+**"I'm continuing Ripple. Current status:**
+- ✅ 30 tests passing, zero leaks
+- ✅ Arithmetic, comparisons, strings working
+- ✅ Reference script (v5.0) is source of truth
+- ✅ @ vs # domains designed (not implemented)
+- ✅ Result type designed (not implemented)
 
-**I want to add `+` and `-` operators using TDD. Write ONE test for addition, I'll implement it, we review, repeat."**
-
----
-
-## Architecture Summary
-
-```
-User Code
-  ↓
-Supervisor (OO, stateful)
-  ↓ per execution
-Arena (temporary allocations)
-  ├─ tokenize() → []Token
-  ├─ parse() → Program
-  └─ evaluate() → EvaluationResult
-       ↓ copy trace
-Permanent Memory (GPA)
-  └─ SupervisionResult (traces, values)
-```
-
-**Simple. Clean. Working.**
+**I want to implement functions with TDD. Syntax decision: `x ->` vs `|x|` - we'll discover edge cases through testing. Write ONE test for simple function definition and call, I'll implement it, we review, repeat."**
 
 ---
 
-## Language Features (Current)
+## Quick Reference Commands
 
-### Working Now
+```bash
+# All tests
+zig build test
+
+# With summary
+zig build test --summary all
+
+# Individual file
+zig test src/evaluator.zig
+```
+
+---
+
+## Testing Strategy & Roadmap
+
+### Current Testing Approach
+**Unit Tests (30 passing)** - Testing individual components in isolation:
+- Lexer: tokenization of all operators and literals
+- Parser: precedence, binary expressions, assignments
+- Evaluator: arithmetic, comparisons, type checking, string operations
+- Supervisor: retries, trace collection, memory management
+
+**Pattern:** TDD (Test-Driven Development)
+- Write ONE failing test
+- Implement just enough to pass
+- Refactor if needed
+- Repeat
+
+### Testing Phases
+
+#### Phase 1: Component Tests (Current - 30 tests)
+Testing individual compiler/interpreter components:
+- ✅ Lexer correctness
+- ✅ Parser precedence
+- ✅ Evaluator semantics
+- ✅ Memory leak detection
+- 🔨 Function definition and calls
+- 🔨 Lambda expressions
+- 🔨 Pipeline operator
+
+#### Phase 2: Language Feature Tests (Next - Target: 75 tests)
+Testing complete language features end-to-end:
+- Function composition
+- Pattern matching
+- Error handling (or, then, tap)
+- Result type behavior
+- @ vs # domain interpretation
+- Collection operations (lists, maps)
+
+#### Phase 3: Ripple Conformance Suite (Target: 100+ tests)
+**Custom test suite proving Ripple is "minimally useful"**
+
+Create `conformance/` directory with `.ripple` test programs:
+
+```
+conformance/
+├── 01_basic_arithmetic.ripple       # Math operations
+├── 02_string_operations.ripple      # String manipulation
+├── 03_functions.ripple               # Function definition and calls
+├── 04_pipelines.ripple              # Pipeline operator
+├── 05_error_handling.ripple         # or, then, tap
+├── 06_pattern_matching.ripple       # match expressions
+├── 07_collections.ripple            # Lists and maps
+├── 08_recursion.ripple              # Recursive functions
+├── 09_higher_order.ripple           # Functions as values
+└── 10_real_world.ripple             # Practical example
+```
+
+**Each file should:**
+- Demonstrate a core language feature
+- Include edge cases
+- Have expected output documented
+- Be runnable via `ripple run conformance/XX_name.ripple`
+
+#### Phase 4: Rosetta Code Problems (Target: 20 programs)
+**Prove Ripple can solve real programming tasks**
+
+Port problems from http://rosettacode.org/ to validate feature completeness:
+
+**Essential Problems (Must Have):**
+1. **FizzBuzz** - Basic control flow
+2. **Fibonacci** - Recursion
+3. **Factorial** - Simple recursion
+4. **Quicksort** - Recursion + lists
+5. **Filter/Map/Reduce** - Higher-order functions
+6. **String reversal** - String manipulation
+7. **Palindrome check** - String + logic
+8. **Sum and product** - List operations
+9. **File I/O** - Read/write files
+10. **CSV parsing** - Practical data handling
+
+**Stretch Goals:**
+11. Binary search
+12. Merge sort
+13. Prime numbers
+14. Roman numerals
+15. Anagrams
+16. Word count
+17. JSON parsing
+18. HTTP request
+19. Data validation
+20. Pipeline data transformation
+
+Create `rosetta/` directory:
+```
+rosetta/
+├── fizzbuzz.ripple
+├── fibonacci.ripple
+├── factorial.ripple
+├── quicksort.ripple
+├── map_filter_reduce.ripple
+└── ...
+```
+
+#### Phase 5: Benchmark Suite (Future - Performance validation)
+**Adapted from The Computer Language Benchmarks Game**
+
+Not about winning, just being "reasonable":
+- n-body simulation
+- Binary trees
+- Fannkuch-redux
+
+Create `benchmarks/` directory with:
+- Ripple implementations
+- Timing infrastructure
+- Memory usage tracking
+- Comparison with reference implementations (optional)
+
+### Success Criteria by Phase
+
+**Phase 1 (Current):** ✅ Complete
+- All component tests passing
+- Zero memory leaks
+- Clean architecture
+
+**Phase 2:** Feature Complete
+- All designed operators working
+- Functions and lambdas functional
+- Pattern matching operational
+- Result type implemented
+- Can write useful programs
+
+**Phase 3:** Minimally Useful Language
+- All conformance tests pass
+- Demonstrates core Ripple philosophy (pipelines, error handling)
+- Proof that Ripple can express real logic
+
+**Phase 4:** Practically Viable
+- Can solve standard programming problems
+- Comparable to other scripting languages
+- Ready for early adopters
+
+**Phase 5:** Production Ready
+- Reasonable performance characteristics
+- Stable enough for real projects
+- Clear performance trade-offs documented
+
+### Testing Infrastructure Needs
+
+**Now:**
+- ✅ Zig's built-in test framework
+- ✅ Memory leak detection via allocator
+- ✅ Individual file testing
+
+**Soon:**
+- 🔨 Test runner for `.ripple` files
+- 🔨 Expected output assertions
+- 🔨 Test harness for conformance suite
+
+**Later:**
+- ⏳ Benchmark timing infrastructure
+- ⏳ Performance regression detection
+- ⏳ Integration test suite
+- ⏳ Fuzzing for edge cases
+
+### Example Conformance Test Structure
+
+**File:** `conformance/04_pipelines.ripple`
 ```ripple
-x := 10                    # Inferred assignment
-name: string = "alice"     # Explicit type
-result := 3 * 4            # Multiplication
-quotient := 10 / 2         # Division
-y := x                     # Identifier lookup
+// Test: Basic pipeline
+result := "hello" |> #String.uppercase
+// Expected: "HELLO"
+
+// Test: Multi-stage pipeline
+numbers := [1, 2, 3, 4, 5]
+result := numbers
+  |> filter (x -> x > 2)
+  |> map (x -> x * 2)
+// Expected: [6, 8, 10]
+
+// Test: Pipeline with error handling
+result :=
+  #File.read "./missing.json"
+    |> #Map.parse _
+    or #Map.new {default: true}
+// Expected: {default: true}
 ```
 
-### Coming Soon
-```ripple
-sum := 2 + 3               # Addition
-diff := 10 - 5             # Subtraction
-equal := x == y            # Comparison
-double := |x| -> x * 2     # Lambda
-result := data |> process  # Pipeline
-```
+**Assertion format TBD** - options:
+1. Comments with expected values (manual verification)
+2. Built-in `assert` function
+3. External test runner that parses output
+4. Compiler-verified doc tests (like Rust)
 
 ---
 
-**Current Quality: 8.5/10**
+## Current Quality: 7/10
 
 **What's good:**
-- ✅ Functional architecture matches language philosophy
-- ✅ Arena pattern simplifies memory management
-- ✅ All tests passing, no leaks
-- ✅ Binary operators work (multiplication, division)
-- ✅ Clean separation: temporary vs permanent memory
+- ✅ Solid foundation (lexer, parser, evaluator)
+- ✅ Clean functional architecture
+- ✅ Zero memory leaks
+- ✅ Clear roadmap with reference script
+- ✅ @ vs # design is sophisticated
 
 **What's next:**
-- Add more operators (`+`, `-`, comparisons)
-- Then functions, lambdas, pipelines, match
-- Type checker
-- Better error messages with source locations
+- Add functions (the big one)
+- Then pipelines (killer feature)
+- Then Result type and error handling
+- Build out stdlib
 
-**The foundation is solid. Time to build features.**
+**The foundation is excellent. Time to build the unique features that make Ripple special.**
