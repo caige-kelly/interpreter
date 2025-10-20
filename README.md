@@ -1,3 +1,4 @@
+
 # Ripple
 
 **Operational scripts that don't lie about failures**
@@ -76,19 +77,19 @@ And **none of them talk to each other.**
 databases := ["prod", "staging", "dev"]
 
 backup_db := db ->
-  @Process.run ("pg_dump " + db + " > " + db + ".sql")
-    |> @Result.and_then _ -> @Process.run ("gzip " + db + ".sql")
-    |> @Result.and_then _ -> @S3.upload (db + ".sql.gz") "backups/"
+  Process.run ("pg_dump " + db + " > " + db + ".sql")
+    then _ -> Process.run ("gzip " + db + ".sql")
+    then _ -> S3.upload (db + ".sql.gz") "backups/"
 
 results := databases 
-  |> @List.parallel_map backup_db {max_concurrent: 3}
+  |> List.parallel_map backup_db {max_concurrent: 3}
 
-results |> @List.partition_results |> match ->
+results |> List.partition_results |> match ->
   all_ok(backups, meta) ->
-    @Log.info ("Backed up " + #String.join backups ", " + " in " + meta.duration + "ms")
+    Log.info ("Backed up " + #String.join backups ", " + " in " + meta.duration + "ms")
   partial(succeeded, failed, meta) ->
-    @Log.info ("Succeeded: " + #String.join succeeded ", ")
-    @Alert.send ("Failed: " + #String.join (failed |> @List.map .db) ", ")
+    Log.info ("Succeeded: " + #String.join succeeded ", ")
+    Alert.send ("Failed: " + #String.join (failed |> List.map .db) ", ")
     // meta.traces shows exactly where each failure happened
 ```
 
@@ -124,7 +125,7 @@ rvm stop backup.rip      # Stop
 #Process.parallel_limit = 5              // Max concurrency
 
 // Your script - runtime does the rest
-@do_work
+do_work
 ```
 
 **No more:**
@@ -133,6 +134,7 @@ rvm stop backup.rip      # Stop
 - Setting up logging infrastructure
 - Configuring process supervisors
 - Writing cron syntax
+- Prefixing every function call with `@`
 
 ### 2. Errors Are First-Class - Not Exceptions
 
@@ -150,23 +152,24 @@ except Exception as e:
 
 **Ripple:** Errors flow through your pipeline
 ```
-@step1
-  |> @Result.and_then step2
-  |> @Result.and_then step3
-  |> match ->
-       ok(result, meta) -> result
-       err(msg, meta) ->
-         // meta tells you exactly which step failed
-         @rollback meta.completed_steps
+step1
+  then step2
+  then step3
+  then result -> result
+  // Unhandled errors fail the script automatically
 ```
 
-**Caller chooses error semantics:**
+**All functions return Result by default. Unhandled errors fail the script automatically:**
 ```
-// @ = Explicit: must handle errors
-config := @File.read "config.json"
-config |> match ->
+// Fails script if file doesn't exist - no explicit handling needed
+config := File.read "config.json"
+
+// Explicit handling when you want custom error behavior
+config := File.read "config.json" |> match ->
   ok(data, _) -> data
-  err(msg, _) -> @IO.exit 1
+  err(msg, _) -> 
+    Log.error msg
+    IO.exit 1
 
 // # = Tolerant: errors become none, provide fallback
 config := #File.read "config.json" or default_config
@@ -185,10 +188,11 @@ logger.info("Starting step 2")
 
 **Ripple:** Every expression is automatically traced
 ```
-// Just write your logic
-@build_artifact "linux"
-  |> @Result.and_then (artifact -> @sign artifact)
-  |> @Result.and_then (signed -> @upload signed "releases/")
+// Just write your logic - errors propagate and fail automatically
+build_artifact "linux"
+  then (artifact -> sign artifact)
+  then (signed -> upload signed "releases/")
+```
 ```
 
 ```bash
@@ -196,11 +200,11 @@ logger.info("Starting step 2")
 rvm trace build.rip
 
 # Output:
-# [12:34:01.234] Line 5: @build_artifact "linux" 
+# [12:34:01.234] Line 5: build_artifact "linux" 
 #   -> ok("app-v1.0-linux", {duration: 2341ms, memory: 234MB})
-# [12:34:03.575] Line 6: @sign 
+# [12:34:03.575] Line 6: sign 
 #   -> ok("app-v1.0-linux.sig", {duration: 89ms})
-# [12:34:03.664] Line 7: @upload
+# [12:34:03.664] Line 7: upload
 #   -> err("network timeout", {duration: 1205ms, retries: 3})
 ```
 
@@ -273,15 +277,15 @@ if failed:
 servers := ["web-1", "web-2", "web-3"]
 
 results := servers 
-  |> @List.map (s -> @deploy s)
+  |> List.map (s -> deploy s)
 
-results |> @List.partition_results |> match ->
+results |> List.partition_results |> match ->
   all_ok(deploys, meta) ->
-    @IO.stdout "✓ Deployed to all servers"
+    IO.stdout "✓ Deployed to all servers"
   partial(succeeded, failed, meta) ->
-    @IO.stdout ("✓ Deployed: " + #String.join succeeded ", ")
-    @IO.stderr ("✗ Failed: " + #String.join (failed |> @List.map .server) ", ")
-    @rollback succeeded  // Rollback what succeeded
+    IO.stdout ("✓ Deployed: " + #String.join succeeded ", ")
+    IO.stderr ("✗ Failed: " + #String.join (failed |> List.map .server) ", ")
+    rollback succeeded  // Rollback what succeeded
 ```
 
 ### 6. Pipelines - Not Procedures
@@ -302,15 +306,20 @@ result = step3(result)
 
 **Ripple:** Data flows through transformations
 ```
-result :=
-  @step1
-    |> @step2 _
-    |> @step3 _
-    |> match ->
-         ok(val, _) -> val
-         err(msg, meta) ->
-           @Log.error ("Failed at " + meta.stage + ": " + msg)
-           @IO.exit 1
+// Unhandled errors automatically fail the script
+result := step1
+  |> step2 _
+  |> step3 _
+
+// Explicit handling when needed
+result := step1
+  |> step2 _
+  |> step3 _
+  |> match ->
+       ok(val, _) -> val
+       err(msg, meta) ->
+         Log.error ("Failed at " + meta.stage + ": " + msg)
+         IO.exit 1
 ```
 
 ## Real-World Examples
@@ -326,24 +335,24 @@ targets := [
 ]
 
 build := target ->
-  @Process.run ("cargo build --release --target " + target.arch + "-" + target.os)
-    |> @Result.and_then _ -> @Process.run ("./scripts/sign.sh " + target.arch + "-" + target.os)
-    |> @Result.and_then _ -> @S3.upload ("target/" + target.arch + "-" + target.os + "/release/app") "releases/"
-    |> @Result.map _ -> target.arch + "-" + target.os
+  Process.run ("cargo build --release --target " + target.arch + "-" + target.os)
+    then _ -> Process.run ("./scripts/sign.sh " + target.arch + "-" + target.os)
+    then _ -> S3.upload ("target/" + target.arch + "-" + target.os + "/release/app") "releases/"
+    then _ -> target.arch + "-" + target.os
 
 // Build all targets in parallel
 results := targets 
-  |> @List.parallel_map (t -> build t) {max_concurrent: 4}
+  |> List.parallel_map (t -> build t) {max_concurrent: 4}
 
 // Handle partial success explicitly
-results |> @List.partition_results |> match ->
+results |> List.partition_results |> match ->
   all_ok(builds, meta) ->
-    @IO.stdout ("✓ All builds succeeded in " + meta.duration + "ms")
-    @GitHub.create_release "v1.0.0" builds
+    IO.stdout ("✓ All builds succeeded in " + meta.duration + "ms")
+    GitHub.create_release "v1.0.0" builds
   partial(succeeded, failed, meta) ->
-    @IO.stdout ("✓ Built: " + #String.join succeeded ", ")
-    @IO.stderr ("✗ Failed: " + #String.join (failed |> @List.map .target) ", ")
-    @Slack.post ("Release partially failed. Built: " + succeeded)
+    IO.stdout ("✓ Built: " + #String.join succeeded ", ")
+    IO.stderr ("✗ Failed: " + #String.join (failed |> List.map .target) ", ")
+    Slack.post ("Release partially failed. Built: " + succeeded)
 ```
 
 ### Database Backup with Cleanup
@@ -357,27 +366,27 @@ results |> @List.partition_results |> match ->
 databases := ["users", "orders", "analytics"]
 
 backup_and_cleanup := db ->
-  timestamp := @Time.now |> @Time.format "YYYYMMDD-HHmmss"
+  timestamp := Time.now |> Time.format "YYYYMMDD-HHmmss"
   filename := db + "-" + timestamp + ".sql.gz"
   
-  @Process.run ("pg_dump " + db + " | gzip > /tmp/" + filename)
-    |> @Result.and_then _ -> @S3.upload ("/tmp/" + filename) ("backups/" + db + "/")
-    |> @Result.and_then _ -> @File.delete ("/tmp/" + filename)
-    |> @Result.and_then _ -> @S3.delete_old ("backups/" + db) {keep_last: 30}
-    |> @Result.map _ -> {db: db, file: filename}
+  Process.run ("pg_dump " + db + " | gzip > /tmp/" + filename)
+    then _ -> S3.upload ("/tmp/" + filename) ("backups/" + db + "/")
+    then _ -> File.delete ("/tmp/" + filename)
+    then _ -> S3.delete_old ("backups/" + db) {keep_last: 30}
+    then _ -> {db: db, file: filename}
 
 results := databases
-  |> @List.parallel_map backup_and_cleanup {max_concurrent: 2}
+  |> List.parallel_map backup_and_cleanup {max_concurrent: 2}
 
-results |> @List.partition_results |> match ->
+results |> List.partition_results |> match ->
   all_ok(backups, meta) ->
-    @Log.info ("Backed up " + #List.length backups + " databases")
-    @Metrics.gauge "backup.success" (#List.length backups)
+    Log.info ("Backed up " + #List.length backups + " databases")
+    Metrics.gauge "backup.success" (#List.length backups)
   partial(ok, failed, meta) ->
-    ok |> @List.each (b -> @Log.info ("✓ " + b.db))
-    failed |> @List.each (f -> 
-      @Log.error ("✗ " + f.value.db + ": " + f.error)
-      @Metrics.increment "backup.failure"
+    ok |> List.each (b -> Log.info ("✓ " + b.db))
+    failed |> List.each (f -> 
+      Log.error ("✗ " + f.value.db + ": " + f.error)
+      Metrics.increment "backup.failure"
     )
 ```
 
@@ -395,25 +404,25 @@ services := [
 ]
 
 check_health := service ->
-  @Net.get service.url {timeout: 5000}
-    |> @Result.and_then (resp -> 
-         @Result.ensure resp 
+  Net.get service.url {timeout: 5000}
+    then (resp -> 
+         Result.ensure resp 
            (r -> r.status == 200 && r.body.status == "healthy")
            (service.name + " unhealthy")
        )
-    |> @Result.map _ -> service.name
+    then _ -> service.name
 
 results := services
-  |> @List.parallel_map (s -> check_health s) {max_concurrent: 3}
+  |> List.parallel_map (s -> check_health s) {max_concurrent: 3}
 
-results |> @List.partition_results |> match ->
+results |> List.partition_results |> match ->
   all_ok(_, _) ->
-    @Metrics.gauge "health.all_up" 1
+    Metrics.gauge "health.all_up" 1
   partial(healthy, unhealthy, _) ->
-    healthy |> @List.each (s -> @Metrics.gauge ("health." + s) 1)
-    unhealthy |> @List.each (f ->
-      @Metrics.gauge ("health." + f.value.name) 0
-      @Alert.slack ("⚠️ " + f.value.name + " is unhealthy: " + f.error)
+    healthy |> List.each (s -> Metrics.gauge ("health." + s) 1)
+    unhealthy |> List.each (f ->
+      Metrics.gauge ("health." + f.value.name) 0
+      Alert.slack ("⚠️ " + f.value.name + " is unhealthy: " + f.error)
     )
 ```
 
@@ -424,27 +433,27 @@ results |> @List.partition_results |> match ->
 #Process.timeout = 1800000
 #System.trace_to = "file:///var/log/ripple/ci/"
 
-@Git.fetch
-  |> @Result.and_then _ -> @Process.run "cargo test --all"
+Git.fetch
+  then _ -> Process.run "cargo test --all"
   |> tap err(msg, meta) ->
-       @GitHub.comment "Tests failed: " + msg
-       @Metrics.increment "ci.test.failure"
-  |> @Result.and_then _ -> @Process.run "cargo build --release"
+       GitHub.comment "Tests failed: " + msg
+       Metrics.increment "ci.test.failure"
+  then _ -> Process.run "cargo build --release"
   |> tap err(msg, meta) ->
-       @GitHub.comment "Build failed: " + msg
-       @Metrics.increment "ci.build.failure"
-  |> @Result.and_then _ -> @Docker.build {tag: "myapp:latest"}
-  |> @Result.and_then img -> @Docker.push img
-  |> @Result.and_then _ -> @K8s.apply "deployment.yaml"
+       GitHub.comment "Build failed: " + msg
+       Metrics.increment "ci.build.failure"
+  then _ -> Docker.build {tag: "myapp:latest"}
+  then img -> Docker.push img
+  then _ -> K8s.apply "deployment.yaml"
   |> match ->
        ok(_, meta) ->
-         @GitHub.comment "✓ Deployed successfully"
-         @Slack.post "#deploys" "Deployed to production"
-         @Metrics.increment "ci.deploy.success"
+         GitHub.comment "✓ Deployed successfully"
+         Slack.post "#deploys" "Deployed to production"
+         Metrics.increment "ci.deploy.success"
        err(msg, meta) ->
-         @GitHub.comment ("✗ Deploy failed at: " + meta.stage)
-         @Slack.post "#incidents" ("Deploy failed: " + msg)
-         @rollback meta.completed_stages
+         GitHub.comment ("✗ Deploy failed at: " + meta.stage)
+         Slack.post "#incidents" ("Deploy failed: " + msg)
+         rollback meta.completed_stages
 ```
 
 ## Use Ripple For
@@ -499,7 +508,7 @@ rvm --version
 // hello.rip
 #System.trace_to = "file://./logs/"
 
-@IO.stdout "Hello, Ripple!"
+IO.stdout "Hello, Ripple!"
 ```
 
 ```bash
@@ -527,7 +536,7 @@ rvm trace hello.rip
 
 **Phase 3: Error Handling** ⏳ Designed
 - Result type implementation
-- `@` vs `#` semantics
+- `#` prefix for optional/tolerant semantics
 - `or`, `then`, `tap` operators
 
 **Phase 4: Runtime & Stdlib** 📋 Next
@@ -541,7 +550,7 @@ rvm trace hello.rip
 **Ripple syntax is Python-clean.** Type safety and error tracking come from IDE tooling:
 
 - Hover to see inferred types  
-- IDE marks `@` functions (can fail) differently from `#` (tolerant)
+- IDE marks functions that can fail vs `#` functions (tolerant/optional)
 - Inline hints reveal error paths
 - Expression traces available in debugger
 
@@ -550,7 +559,7 @@ rvm trace hello.rip
 ## Language Principles
 
 **No if/else** - Pattern matching via `match` expressions  
-**Explicit errors** - Choose `@` (must handle) or `#` (graceful fallback)  
+**Explicit errors by default** - Functions return Result types, use `#` for optional/tolerant  
 **Immutable** - No variable rebinding, use pipelines  
 **Pipelines first** - Data flows through transformations  
 **Built-in observability** - Every expression traced automatically
