@@ -7,28 +7,25 @@ Ripple reimagines error handling by making failures a first-class part of your p
 ## Why Ripple?
 
 ```python
-# Python: Error handling obscures the business logic
-def load_config(path):
-    try:
-        with open(path, 'r') as f:
-            config = json.load(f)
-            if not validate_config(config):
-                return None
-            return config
-    except FileNotFoundError:
-        print(f"Config not found: {path}")
-        return None
-    except json.JSONDecodeError as e:
-        print(f"Invalid JSON: {e}")
-        return None
+# Python: Exceptions separate error handling from logic
+from pathlib import Path
+import json
 
-config = load_config('./config.json')
-if config is None:
+def load_config(path):
+    """Most Pythonic: let exceptions propagate, handle at boundary"""
+    config = json.loads(Path(path).read_text())
+    validate_config(config)
+    return config
+
+# At call site - error handling separated from happy path
+try:
+    config = load_config('./config.json')
+except (FileNotFoundError, json.JSONDecodeError, ValueError):
     config = default_config
 ```
 
 ```ripple
-// Ripple: The happy path is the code, errors flow naturally
+// Ripple: Errors flow inline with logic
 config :=
   #File.read "./config.json"
     |> #Map.parse_json _
@@ -267,37 +264,42 @@ Current focus areas:
 
 ## Example: Real-World Deployment Script
 
-**Python version with nested try/catch:**
+**Python - idiomatic with exception handling:**
 ```python
-def deploy_to_server(server, user, app_name, version):
-    try:
-        # Stop service
-        result = subprocess.run(
-            f"ssh {user}@{server} 'sudo systemctl stop {app_name}'",
-            capture_output=True, timeout=30
+import subprocess
+from typing import List
+
+def deploy_to_server(server: str, user: str, app_name: str, version: str):
+    """Pythonic: raise on error, handle at boundary"""
+    commands = [
+        f"ssh {user}@{server} 'sudo systemctl stop {app_name}'",
+        f"scp ./dist/{app_name}-{version}.tar.gz {user}@{server}:/tmp/",
+        f"ssh {user}@{server} 'cd /opt/{app_name} && tar -xzf /tmp/{app_name}-{version}.tar.gz'",
+        f"ssh {user}@{server} 'sudo systemctl start {app_name}'",
+    ]
+    
+    for cmd in commands:
+        subprocess.run(
+            cmd, 
+            shell=True, 
+            check=True,  # Raises CalledProcessError on failure
+            capture_output=True, 
+            timeout=30
         )
-        if result.returncode != 0:
-            return False, f"Stop failed: {result.stderr}"
-        
-        # Copy files
-        result = subprocess.run(
-            f"scp ./dist/{app_name}-{version}.tar.gz {user}@{server}:/tmp/",
-            capture_output=True, timeout=30
-        )
-        if result.returncode != 0:
-            return False, f"Copy failed: {result.stderr}"
-        
-        # Extract and start
-        # ... more nested error checking
-        
-        return True, None
-    except subprocess.TimeoutExpired:
-        return False, "Command timed out"
-    except Exception as e:
-        return False, f"Unexpected error: {e}"
+
+# Usage: error handling is distant from execution
+try:
+    deploy_to_server(server, user, app_name, version)
+    print(f"✓ Deployed to {server}")
+except subprocess.CalledProcessError as e:
+    print(f"Command failed: {e.stderr.decode()}")
+    rollback(server)
+except subprocess.TimeoutExpired:
+    print("Deployment timed out")
+    rollback(server)
 ```
 
-**Ripple version with explicit error flow:**
+**Ripple - errors flow with logic:**
 ```ripple
 @deploy_to_server := server user app_name version ->
   commands := [
@@ -314,34 +316,52 @@ def deploy_to_server(server, user, app_name, version):
                 ok(result, _) ->
                   result.exit_code == 0 |> match ->
                     true -> {continue: none}
-                    false -> {stop: err("Command failed: " + cmd + "\n" + result.stderr)}
+                    false -> {stop: err("Command failed: " + result.stderr)}
                 err(msg, _) ->
-                  {stop: err("Command error: " + cmd + "\n" + msg)}
+                  {stop: err(msg)}
        )
+
+// Usage: error handling flows inline
+@deploy_to_server server user app_name version
+  |> match ->
+       ok(_, _) -> @IO.stdout ("✓ Deployed to " + server)
+       err(msg, _) ->
+         @IO.stderr msg
+         @rollback server
 ```
 
 **Health check with retry logic:**
 ```python
-# Python: Manual retry loop with state
-def wait_for_healthy(server, health_url, max_retries=10):
+import requests
+import time
+
+def wait_for_healthy(server: str, health_url: str, max_retries: int = 10) -> None:
+    """Pythonic: raise on final failure"""
     for attempt in range(max_retries):
         try:
             response = requests.get(f"http://{server}{health_url}", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get('status') == 'healthy':
-                    return True, None
-        except:
-            pass
-        
-        if attempt < max_retries - 1:
+            response.raise_for_status()
+            
+            if response.json().get('status') == 'healthy':
+                return  # Success
+                
+        except (requests.RequestException, ValueError):
+            if attempt == max_retries - 1:
+                raise  # Re-raise on final attempt
             time.sleep(3)
     
-    return False, "Server did not become healthy"
+    raise TimeoutError(f"Server {server} did not become healthy")
+
+# Usage
+try:
+    wait_for_healthy(server, health_url)
+    print("Server healthy")
+except (requests.RequestException, TimeoutError) as e:
+    print(f"Health check failed: {e}")
 ```
 
 ```ripple
-// Ripple: Recursive with explicit state
+// Ripple: Explicit recursion with error propagation
 @wait_for_healthy := server health_url max_retries ->
   @wait_helper server health_url max_retries 0
 
@@ -371,28 +391,39 @@ def wait_for_healthy(server, health_url, max_retries=10):
              false -> err("Server reports: " + data.status)
          err(msg, _) ->
            err("Health check failed: " + msg)
+
+// Usage: inline error handling
+@wait_for_healthy server health_url 10
+  |> match ->
+       ok(_, _) -> @IO.stdout "Server healthy"
+       err(msg, _) -> @IO.stderr ("Health check failed: " + msg)
 ```
 
 **Configuration validation:**
 ```python
-# Python: Imperative checks with early returns
-def validate_config(config):
+def validate_config(config: dict) -> dict:
+    """Pythonic: raise descriptive errors"""
     required = ['servers', 'app_name', 'deploy_user', 'health_check_url']
     
-    for field in required:
-        if field not in config:
-            print(f"Missing field: {field}")
-            return False
+    missing = [field for field in required if field not in config]
+    if missing:
+        raise ValueError(f"Missing required fields: {', '.join(missing)}")
     
     if not config['servers']:
-        print("No servers specified")
-        return False
+        raise ValueError("No servers specified")
     
-    return True
+    return config
+
+# Usage: try/except at boundary
+try:
+    config = validate_config(raw_config)
+except ValueError as e:
+    print(f"Invalid config: {e}")
+    sys.exit(1)
 ```
 
 ```ripple
-// Ripple: Functional validation with descriptive errors
+// Ripple: Return Result type, compose naturally
 @validate_config := config ->
   required := ["servers", "app_name", "deploy_user", "health_check_url"]
   
@@ -407,6 +438,17 @@ def validate_config(config):
       (#List.is_empty config.servers) |> match ->
         true -> err("No servers specified")
         false -> ok(config)
+
+// Usage: compose with other operations
+config :=
+  @File.read path
+    |> @Map.parse_json _
+    |> @validate_config _
+    |> match ->
+         ok(c, _) -> c
+         err(msg, _) ->
+           @IO.stderr ("Invalid config: " + msg)
+           @IO.exit 1
 ```
 
 ## Learn More
