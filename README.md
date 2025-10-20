@@ -1,4 +1,3 @@
-
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -84,12 +83,15 @@ result :=
 
 Ripple's killer feature: **caller-driven error interpretation**. The same function can be used monadically (explicit error handling) or tolerantly (fail gracefully).
 
+**Critical: Unhandled Result types halt compilation.** You must explicitly handle errors through pattern matching, convert to tolerant mode with `#`, or propagate them upward.
+
 #### Monadic (`@`): Explicit Error Handling
 
 ```ripple
 // Expose both success and error channels
 response := @Net.get "https://api.example.com/data"
 
+// MUST handle the Result - compilation fails otherwise
 response |> match ->
   ok(body, meta) ->
     #IO.stdout ("Success: " + body)
@@ -105,6 +107,8 @@ config :=
   #File.read "./config.json"
     |> #Map.parse _
     or #Map.new { env: "dev" }
+
+// No explicit error handling needed - errors become none
 ```
 
 ### Result Type: Dual Channel Architecture
@@ -259,8 +263,13 @@ Current focus areas:
       err("Configuration invalid: " + msg)
 
 // Caller chooses: handle errors explicitly or fail gracefully
-result := @deploy_service "./config.json"  // Monadic
-deployment := #deploy_service "./config.json" or default_deployment // Tolarent
+result := @deploy_service "./config.json"  // Returns Result - must handle
+result |> match ->
+  ok(data, _) -> #IO.stdout "Deployed successfully"
+  err(msg, _) -> #IO.stdout ("Deploy failed: " + msg)
+
+deployment := #deploy_service "./config.json"  // Returns data | none
+deployment or default_deployment  // Provide fallback if none
 ```
 
 ## Learn More
