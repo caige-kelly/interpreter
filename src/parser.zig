@@ -1,9 +1,11 @@
 const std = @import("std");
+const testing = std.testing;
 const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Ast = @import("ast.zig");
 const errors = @import("error.zig");
 const Type = @import("ast.zig").Type;
+const lex = @import("lexer.zig");
 
 pub const ParseError = error{ UnexpectedToken, InvalidAssignmentTarget, ExpectedToken, NoMatchFound, OutOfMemory };
 
@@ -50,7 +52,7 @@ pub const Parser = struct {
     // -------------------------------------------------------------
 
     fn parseAssignment(self: *Parser) !Ast.Expr {
-        const expr = try self.parsePrimary();
+        const expr = try self.parseMultiplicative();
 
         var explicit_type: ?Type = null;
 
@@ -77,7 +79,7 @@ pub const Parser = struct {
         // Common parsing for both branches
         self.skipNewlines();
 
-        const value = try self.parseAssignment();
+        const value = try self.parseMultiplicative();
 
         // Extract identifier
         switch (expr) {
@@ -99,6 +101,30 @@ pub const Parser = struct {
         }
     }
 
+    fn parseMultiplicative(self: *Parser) !Ast.Expr {
+        var left = try self.parsePrimary(); // Start with first operand
+
+        // Keep consuming * and / operators (left-associative)
+        while (self.peek().type == .STAR or self.peek().type == .SLASH) {
+            const operator = self.consume();
+            self.skipNewlines();
+
+            const right = try self.parsePrimary();
+
+            // Allocate BOTH children on heap
+            const left_ptr = try self.allocator.create(Ast.Expr);
+            left_ptr.* = left; // Copy current left into heap
+
+            const right_ptr = try self.allocator.create(Ast.Expr);
+            right_ptr.* = right; // Copy right into heap
+
+            // Build new binary node (left becomes the new tree)
+            left = Ast.Expr{ .binary = .{ .left = left_ptr, .operator = operator.type, .right = right_ptr } };
+        }
+
+        return left;
+    }
+
     fn parsePrimary(self: *Parser) !Ast.Expr {
         // --- Otherwise consume next token normally
         const token = self.consume();
@@ -111,7 +137,7 @@ pub const Parser = struct {
             .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
 
             else => {
-                errors.report(token.line, "parse", "Unexpected token in primary expression");
+                //errors.report(token.line, "parse", "Unexpected token in primary expression");
                 //std.debug.print("token: {any}\n", .{token});
                 return error.UnexpectedToken;
             },
@@ -122,12 +148,13 @@ pub const Parser = struct {
     // Utility functions
     // -------------------------------------------------------------
     fn parseTypeName(self: *Parser, name: []const u8) !Type {
+        _ = self;
         if (std.mem.eql(u8, name, "number")) return .number;
         if (std.mem.eql(u8, name, "string")) return .string;
         if (std.mem.eql(u8, name, "boolean")) return .boolean;
         if (std.mem.eql(u8, name, "none")) return .none;
 
-        errors.report(self.peek().line, "parse", "Unknown type name");
+        //errors.report(self.peek().line, "parse", "Unknown type name");
         return error.UnknownType;
     }
 
@@ -159,3 +186,58 @@ pub const Parser = struct {
         return self.peek().type == .EOF;
     }
 };
+
+test "parse multiplication - manual tokens" {
+    const allocator = testing.allocator;
+
+    const tokens = [_]Token{
+        Token{ .type = .IDENTIFIER, .lexeme = "x", .literal = null, .line = 1, .column = 1 },
+        Token{ .type = .COLON_EQUAL, .lexeme = ":=", .literal = null, .line = 1, .column = 3 },
+        Token{ .type = .NUMBER, .lexeme = "3", .literal = .{ .number = 3.0 }, .line = 1, .column = 6 },
+        Token{ .type = .STAR, .lexeme = "*", .literal = null, .line = 1, .column = 8 },
+        Token{ .type = .NUMBER, .lexeme = "4", .literal = .{ .number = 4.0 }, .line = 1, .column = 10 },
+        Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 11 },
+    };
+
+    var parser = try Parser.init(&tokens, allocator);
+    var program = try parser.parse(); // Changed: var instead of const
+    defer parser.deinit();
+    defer program.deinit(); // ADD THIS LINE - frees the AST
+
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+
+    const stmt = program.expressions[0];
+    try testing.expect(stmt == .assignment);
+
+    const assign = stmt.assignment;
+    try testing.expectEqualStrings("x", assign.name);
+
+    try testing.expect(assign.value.* == .binary);
+
+    const binary = assign.value.binary;
+    try testing.expectEqual(TokenType.STAR, binary.operator);
+
+    try testing.expect(binary.left.* == .literal);
+    try testing.expectEqual(@as(f64, 3.0), binary.left.literal.number);
+
+    try testing.expect(binary.right.* == .literal);
+    try testing.expectEqual(@as(f64, 4.0), binary.right.literal.number);
+}
+
+test "parser deinit after toOwnedSlice" {
+    const allocator = testing.allocator;
+
+    const tokens = [_]Token{
+        Token{ .type = .NUMBER, .lexeme = "42", .literal = .{ .number = 42.0 }, .line = 1, .column = 1 },
+        Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 3 },
+    };
+
+    var parser = try Parser.init(&tokens, allocator);
+    var program = try parser.parse();
+
+    // DON'T call parser.deinit()
+    // defer parser.deinit();  ← Comment this out
+    defer program.deinit();
+
+    // Run with: zig test src/parser.zig
+}

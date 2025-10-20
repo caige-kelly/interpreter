@@ -4,9 +4,9 @@
 - **Lexer:** ✅ Complete and working
 - **Parser:** ✅ Complete for assignments (MVP)
 - **Evaluator:** ✅ Complete with trace collection (MVP)
+- **Supervisor:** ✅ Complete (MVP with retry logic)
 - **Tests:** ✅ Inline with source code (Zig style)
 - **Type Checker:** ❌ Not started
-- **Supervisor:** ❌ Not started (NEXT PRIORITY)
 - **VM with Bytecode:** ❌ Not started (future)
 
 ## What This Is
@@ -139,11 +139,12 @@ src/
   ast.zig            — AST node definitions
   parser.zig         — Parser (assignments complete) + tests inline
   evaluator.zig      — Evaluator (complete for MVP) + tests inline
+  supervisor.zig     — Supervisor (complete for MVP) + tests inline
+  errors.zig         — Error reporting utilities
 
   # Future:
   type_checker.zig   — [TODO] Type checking pass
   vm.zig             — [TODO] VM with bytecode execution
-  supervisor.zig     — [TODO] Process supervision
 build.zig            — Build configuration
 ```
 
@@ -268,6 +269,172 @@ pub const EvalError = error{
 
 ---
 
+## Supervisor (Complete ✅)
+
+### What It Does
+
+**Process supervision with retry logic:**
+- Runs Ripple programs under monitoring
+- Restarts on evaluation errors (configurable max restarts)
+- **Does NOT retry parse errors** (syntax errors can't be fixed by retrying)
+- Collects execution traces from all attempts
+- Measures duration across retries
+- Provides detailed results (success/failure, attempts, errors)
+
+### Architecture
+
+```zig
+pub const SupervisorConfig = struct {
+    max_restarts: u32 = 3,          // How many attempts
+    timeout_ms: ?u64 = null,        // [TODO] Thread-based timeout
+    enable_trace: bool = true,      // Collect execution traces
+};
+
+pub const Supervisor = struct {
+    allocator: Allocator,
+    config: SupervisorConfig,
+
+    // Public API
+    pub fn run(source: []const u8) !SupervisionResult;
+
+    // Internal (unit-tested)
+    fn attemptRun(source: []const u8) !RunAttempt;
+    fn finishAttempt(...) !RunAttempt;
+    fn copyTrace(...) ![]const EvalResult;
+};
+```
+
+### Two-Level Design
+
+**Level 1: `attemptRun()` - Single Execution**
+```zig
+const RunAttempt = struct {
+    status: Status,  // success, eval_error, parse_error
+    value: ?Value,
+    err: ?anyerror,
+    trace: ?[]const EvalResult,  // null if parse error
+    duration_ms: u64,
+    memory_used: usize,
+};
+```
+
+Runs the program **once**:
+1. Lex → Parse → Eval (using arena allocator)
+2. Copies trace to permanent memory
+3. Measures duration
+4. Returns detailed attempt result
+
+**Level 2: `run()` - Retry Loop**
+```zig
+pub const SupervisionResult = struct {
+    status: Status,  // success, failed_max_restarts, parse_error, timeout
+    attempts: u32,
+    final_value: ?Value,
+    trace: ?[]const EvalResult,  // From final attempt
+    duration_ms: u64,             // Total across all attempts
+    memory_used: usize,
+    last_error: ?anyerror,
+    allocator: Allocator,
+};
+```
+
+Orchestrates retries:
+1. Calls `attemptRun()` in a loop
+2. **Success** → Return immediately (no retry)
+3. **Parse error** → Return immediately (no retry)
+4. **Eval error** → Check if last attempt:
+   - If yes → Return `failed_max_restarts`
+   - If no → Free trace, retry
+5. Accumulates total duration across attempts
+
+### Retry Logic
+
+```
+Attempt 1: eval_error  → Free trace, retry
+Attempt 2: eval_error  → Free trace, retry
+Attempt 3: eval_error  → Keep trace, return failed_max_restarts
+
+OR
+
+Attempt 1: success     → Return immediately (attempts = 1)
+
+OR
+
+Attempt 1: parse_error → Return immediately (attempts = 1, no retry)
+```
+
+**Key insight:** Only eval errors are retried. Parse errors fail fast.
+
+### Memory Management
+
+**Arena for Temporary Allocations:**
+```zig
+var arena = std.heap.ArenaAllocator.init(self.allocator);
+defer arena.deinit();
+// Lexer, Parser, Evaluator all use arena.allocator()
+```
+
+**Permanent Allocator for Results:**
+```zig
+// Copy trace from arena to permanent memory
+fn copyTrace(temp_trace: []const EvalResult) ![]const EvalResult {
+    const trace_copy = try self.allocator.alloc(EvalResult, temp_trace.len);
+    @memcpy(trace_copy, temp_trace);
+    return trace_copy;
+}
+```
+
+**Why:** Trace must outlive the function. Arena is destroyed on return.
+
+### Testing Strategy
+
+**Unit Tests (test `attemptRun`):**
+- Success case (valid program)
+- Eval error case (undefined variable)
+- Parse error case (syntax error)
+
+**Integration Tests (test `run`):**
+- Success on first attempt
+- Max retries exhausted (eval error × 3)
+- Parse error doesn't retry
+
+All tests use `testing.allocator` to detect memory leaks.
+
+### Current Limitations
+
+- ❌ No timeout implementation (requires threads)
+- ❌ No memory tracking (returns 0)
+- ❌ Traces from failed retry attempts are discarded (only final kept)
+- ❌ No detailed trace mode (all attempts)
+
+### Future Enhancements
+
+**Timeout Support:**
+```zig
+// Spawn evaluator in thread
+// Monitor with timer
+// Kill thread if exceeds timeout_ms
+```
+
+**Memory Tracking:**
+```zig
+// Wrap allocator with GeneralPurposeAllocator
+// Read total_requested_bytes after each run
+```
+
+**Detailed Traces:**
+```zig
+pub const SupervisorConfig = struct {
+    detailed_traces: bool = false,  // Keep traces from all attempts
+};
+
+pub const SupervisionResult = struct {
+    all_traces: ?[][]const EvalResult,  // If detailed_traces enabled
+};
+```
+
+---
+
 ## Testing Framework (Inline with Code ✅)
 
 ### Approach
@@ -309,82 +476,12 @@ test "evaluate literal number" {
 ```
 
 ### Current Tests
-- Literal evaluation (numbers, strings, booleans, none)
-- Identifier lookup
-- Assignment execution
-- Error cases (undefined vars, redefinition)
-- Trace collection
+- **Lexer:** Tokenization, indentation tracking
+- **Parser:** Assignment parsing, literals, identifiers
+- **Evaluator:** Literal evaluation, identifier lookup, assignment execution, error cases
+- **Supervisor:** Single attempt (success/eval error/parse error), retry logic, max retries
 
----
-
-## Next Steps: Supervisor (PRIORITY)
-
-### Goal
-Build a supervisor that can:
-1. Run Ripple programs under monitoring
-2. Restart on failure (configurable max restarts)
-3. Enforce resource limits (memory, timeout)
-4. Collect execution traces
-5. Provide detailed results (success/failure, attempts, errors)
-
-### Design Philosophy
-**Model after BEAM/Erlang supervision**, but adapted for:
-- Short-lived scripts (not long-running processes)
-- Infrastructure/ops workloads (I/O bound, not CPU bound)
-- Explicit configuration (script-level or external)
-
-### Supervisor Model
-
-```
-Supervisor
-    ↓
-  spawns
-    ↓
-Process (Evaluator)
-    ↓
-  runs
-    ↓
-Lex → Parse → Eval (tree-walk)
-    ↓
-If crashes → Supervisor decides: restart? fail? fallback?
-```
-
-### Initial API Design
-
-```zig
-pub const SupervisorConfig = struct {
-    max_restarts: u32 = 3,
-    timeout_ms: ?u64 = null,
-    max_memory_bytes: ?usize = null,  // Track via allocator
-    enable_trace: bool = true,
-};
-
-pub const Supervisor = struct {
-    allocator: Allocator,
-    config: SupervisorConfig,
-
-    pub fn run(source: []const u8) !SupervisionResult;
-};
-
-pub const SupervisionResult = struct {
-    status: Status,  // success, failed_max_restarts, timeout, etc.
-    value: ?Value,
-    attempts: u32,
-    trace: []const EvalResult,
-    memory_used: usize,
-    duration_ms: u64,
-    last_error: ?anyerror,
-};
-```
-
-### Development Approach
-**Test-Driven Development (TDD):**
-1. Write ONE test for a specific behavior
-2. Implement minimum code to pass
-3. Review and refactor
-4. Repeat
-
-This builds understanding incrementally rather than receiving large code blocks.
+**Total: 8 tests, all passing, zero memory leaks**
 
 ---
 
@@ -392,7 +489,7 @@ This builds understanding incrementally rather than receiving large code blocks.
 
 ### TDD Methodology
 
-**For all new features (Supervisor, future work):**
+**For all new features:**
 
 1. **Test First** — Claude writes a failing test
 2. **Implement** — You write code to make it pass
@@ -501,6 +598,57 @@ Use tracking allocator, not OS queries.
 - Fast (atomic counters)
 - Good enough for MVP (tracks heap allocations)
 
+### 10. **Assignment as Statement (Not Expression)**
+Assignments cannot be chained or used in expressions.
+
+**Why:**
+- Explicit > Clever (core philosophy)
+- Prevents common bugs (`if (x = y)` typo in C)
+- Matches modern language trend (Go, Rust, Swift)
+- More readable (`x := 10; y := 20` vs `x := y := 10`)
+
+**Trade-off:** Can't write `x := y := 10`, but that's rarely needed anyway.
+
+### 11. **Caller Provides Allocator Pattern**
+All components accept an `Allocator` parameter from the caller.
+
+**Why:**
+- Caller controls memory strategy (GPA, arena, pool, etc.)
+- Clear ownership (who allocated = who frees)
+- Testable (can use `testing.allocator` to detect leaks)
+- Standard Zig idiom
+
+**Pattern:**
+```zig
+var supervisor = Supervisor{ .allocator = my_allocator, .config = config };
+var result = try supervisor.run(source);
+defer result.deinit();  // Caller frees
+```
+
+### 12. **Guard Clause Style**
+Prefer early returns over nested conditions.
+
+**Why:**
+- Reduces nesting depth
+- Makes happy path obvious (at the end)
+- Easier to reason about control flow
+
+**Example:**
+```zig
+// Guard: Success - return immediately
+if (result.status == .success) {
+    return SupervisionResult{ ... };
+}
+
+// Guard: Parse error - don't retry
+if (result.status == .parse_error) {
+    return SupervisionResult{ ... };
+}
+
+// Implicit: eval_error - retry logic continues
+result.deinit(allocator);
+```
+
 ---
 
 ## Lessons Learned
@@ -515,6 +663,14 @@ Use tracking allocator, not OS queries.
 8. **Zig 0.15 has breaking changes** — Always check current docs
 9. **Build system complexity** — Keep it simple until necessary
 10. **Tests inline work best** — Separate test dirs are optional complexity
+11. **TDD builds confidence** — Every feature proven correct by tests
+12. **Unit vs Integration tests** — Integration tests for component interaction, unit tests for complex logic
+13. **Memory ownership patterns** — Arena for temps, parent allocator for permanent data
+14. **Off-by-one errors** — Start loop counters at values that make sense (attempts at 1, not 0)
+15. **Init/deinit symmetry** — If `init()` allocates, `deinit()` must free
+16. **Trace ownership transfer** — Caller owns returned memory, must free it
+17. **Parse vs eval errors** — Parse errors are permanent (don't retry), eval errors might be transient
+18. **Debug output pollution** — Remove `stderr` prints from library code, handle at caller level
 
 ---
 
@@ -541,32 +697,45 @@ Use tracking allocator, not OS queries.
 - ✅ Working lexer
 - ✅ Working parser (for assignments)
 - ✅ Working evaluator (for assignments, with trace collection)
-- ✅ Test framework set up (inline tests)
+- ✅ Working supervisor (with retry logic, tested)
+- ✅ Test framework proven effective (inline tests, TDD)
 
-I want to build the Supervisor next using TDD. One test at a time. Make me think and learn."
+I want to add [NEXT FEATURE] using TDD. One test at a time. Make me think and learn."
+
+### Possible Next Features
+- **Binary operators** (`+`, `-`, `*`, `/`, `==`, `!=`)
+- **Pipeline operator** (`|>`)
+- **Lambda expressions** (`|x| -> x * 2`)
+- **Match expressions** (pattern matching)
+- **Function calls** (`process(data, config)`)
+- **Timeout support** (thread-based execution limits)
 
 ### Paste
 - This handoff doc
-- Any specific questions about the Supervisor design
+- Any specific questions about the feature
 
 ### Explicitly State
 "Use TDD: You write ONE test, I implement it, we review, repeat. Ask me questions. Make me understand before coding."
 
 ---
 
-## Current Implementation Quality: 8/10
+## Current Implementation Quality: 9/10
 
 **What's good:**
-- Clean, understandable code
-- Proper error handling
-- Configurable runtime
-- Test framework in place
-- Good separation of concerns
+- ✅ Clean, understandable code
+- ✅ Proper error handling with retry logic
+- ✅ Configurable runtime
+- ✅ Comprehensive test framework (unit + integration)
+- ✅ Good separation of concerns
+- ✅ No memory leaks
+- ✅ Production-ready Supervisor (MVP)
+- ✅ TDD methodology working well
 
 **What could improve:**
 - More expression types (operators, calls, match)
-- Better error messages (source locations)
-- More comprehensive tests
+- Better error messages (source locations in errors)
+- Timeout implementation (requires threads)
+- Memory tracking (via GPA wrapper)
 - Documentation comments in code
 
 ---
@@ -586,6 +755,28 @@ Even if only a few teams use it, that's a win. The goal is to prove the concept 
 
 ---
 
-**You've built a solid foundation. The interpreter works. Now make it reliable with supervision.**
+## Refactoring TODOs
+
+### Parser Cleanup
+- Consider removing `Parser.init()` if it's just field assignment
+- OR keep init/deinit if ArrayList field makes sense
+- Decision: Does Parser need stateful accumulation, or can parse() be self-contained?
+
+### Error Reporting
+- Remove `errors.report()` calls from parser (debug noise)
+- Handle error printing at CLI/REPL level (not in library code)
+
+### Memory Tracking
+- Add GPA wrapper for actual memory measurement (currently returns 0)
+
+### Timeout Implementation
+- Thread-based timeout for `timeout_ms` config
+- Kill thread if execution exceeds limit
+
+---
+
+directive for cluade: "Use TDD: You write ONE test, I implement it, we review, repeat. Ask me questions. Make me understand before coding."
+
+**You've built a solid foundation. The interpreter works. The supervisor works. Now add features.**
 
 **Remember: TDD from here on. Test first, implement second, understand always.**

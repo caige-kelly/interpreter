@@ -33,12 +33,15 @@ pub const Expr = union(enum) {
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .assignment => |*assign| {
-                // Free the heap-allocated value pointer
                 assign.value.deinit(allocator);
                 allocator.destroy(assign.value);
             },
-            // Add cases for other pointer-containing variants
-            // For now, other variants don't need cleanup
+            .binary => |*bin| {
+                bin.left.deinit(allocator);
+                allocator.destroy(bin.left);
+                bin.right.deinit(allocator);
+                allocator.destroy(bin.right);
+            },
             else => {},
         }
     }
