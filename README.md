@@ -49,9 +49,10 @@ name := "alice"            // Immutable by default
 active := true
 nothing := none
 
-// Shadowing (rebinding)
-count := 1
-count := count + 1         // Creates new binding, now 2
+// No shadowing allowed - use pipelines instead
+result := 1
+  |> (_ + 1)               // 2
+  |> (_ * 2)               // 4
 ```
 
 ### Functions
@@ -64,7 +65,8 @@ result := add 10 32        // 42
 // Multi-line
 process := x ->
   y := x + 1
-  y * 2                    // Implicit return
+  z := y * 2
+  z                        // Implicit return
 ```
 
 ### Pipelines
