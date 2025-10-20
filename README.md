@@ -31,7 +31,7 @@ data :=
 
 **No if/else.** Pattern matching via `match` expressions.
 
-**No boolean operators.** Match expressions replace complex boolean logic.
+**Boolean operators for guards.** `&&` and `||` compose conditions in match patterns and predicates, not for control flow.
 
 **Explicit error handling.** Choose monadic (`@`) or tolerant (`#`) semantics at the call site.
 
@@ -126,10 +126,19 @@ Result<V, E, S> = ok(V, S) | err(E, S)
 No `if/else` statements. Use `match` for all conditional logic:
 
 ```ripple
+// Guards compose conditions with && and ||
 temperature |> match t ->
-  60 <= t <= 80 -> "comfortable"
-  t < 60 -> "cold"
-  any -> "hot"
+  t >= 60 && t <= 80 -> "comfortable"
+  t < 32 && humidity > 0.8 -> "freezing and damp"
+  t > 90 || humidity > 0.9 -> "too hot or too humid"
+  any -> "normal"
+
+// Boolean results can be matched
+is_eligible := user.age >= 18 && user.verified
+
+is_eligible |> match ->
+  true -> @grant_access(user)
+  false -> @deny_access(user)
 
 // On Result types
 @fetch_user(id) |> match ->
@@ -155,9 +164,8 @@ result :=
 ### What's Different
 
 - **No `if/else`** - Pattern matching replaces conditionals
-- **No boolean operators** - Match handles complex logic
 - **No exceptions** - Errors are values in Result types
-- **No variable shadowing** - Different values need different names
+- **No variable shadowing** - Different values need different names (use pipelines)
 - **No reassignment** - Rebinding creates new bindings
 - **Parentheses only for grouping** - Not for function calls
 
