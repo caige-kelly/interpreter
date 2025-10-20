@@ -1,3 +1,4 @@
+
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -48,6 +49,27 @@ config :=
 **Pipelines first.** Data flows through transformations via `|>`.
 
 ## Quick Tour
+
+### Execution Hierarchy: System → Process → Task
+
+Ripple organizes execution in three levels:
+
+**#System** - Configure the VM/runtime environment
+```
+#System.verbosity = "verbose"       // Trace every task
+#System.max_memory = "2GB"          // Memory limits
+```
+
+**#Process** - Configure the current program execution
+```
+#Process.timeout = 300000           // Global timeout (ms)
+#Process.retry_defaults = {max_attempts: 3, delay: 1000}
+```
+
+**@Task** - Individual operations (every expression is a task)
+```
+@Task.retry check_health {max_attempts: 10, delay: 5000}
+```
 
 ### Variables & Types
 
