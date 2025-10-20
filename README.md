@@ -64,8 +64,7 @@ result := add 10 32        // 42
 // Multi-line
 process := x ->
   y := x + 1
-  z := y * 2
-  z                        // Implicit return
+  y * 2                    // Implicit return
 ```
 
 ### Pipelines
