@@ -1,3 +1,4 @@
+
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -162,7 +163,7 @@ result :=
 |----------|---------|---------|
 | `\|>` | Pipeline forward | `data \|> process \|> save` |
 | `or` | Fallback on none | `#File.read path or default` |
-| `then` | Sequence if present | `value then #validate _ then #save _` |
+| `then` | Sequence (only if left not none) | `#File.read path then #Map.parse _` |
 | `tap` | Side effects | `result \|> tap err -> #Log.error _` |
 | `match` | Pattern matching | `value \|> match -> ...` |
 
