@@ -506,16 +506,18 @@ test "feature name" {
 x := 10                    // Inferred assignment
 name: string = "alice"     // Explicit type (rare)
 
-// Arithmetic
-result := 3 * 4            // Multiplication
+// Arithmetic with parentheses
+result := (3 + 4) * 2      // Parentheses for grouping
 sum := 2 + 3               // Addition
 diff := 10 - 5             // Subtraction
+product := 3 * 4           // Multiplication
 quotient := 10 / 2         // Division
 
 // Negative numbers
 x := -42                   // Negative literal
 y := 5 + -3                // Negative in expression
 z := -x                    // Negate variable
+w := -(5 + 3)              // Negate grouped expression
 
 // Strings
 greeting := "hello" + " world"  // Concatenation
@@ -533,11 +535,18 @@ not_equal := x != y        // Inequality
 greater := x > 5           // Greater than (numbers only)
 less_equal := x <= 10      // Less than or equal
 
+// Boolean operators
+valid := x > 0 && x < 100          // AND
+either := x == 5 || x == 10        // OR
+not_zero := !(x == 0)              // NOT
+
+// Chained comparisons
+in_range := 10 <= x <= 20          // Chained (equivalent to x >= 10 && x <= 20)
+
 // Complex expressions
 result := 2 + 3 * 4        // Precedence: 14 (not 20)
 calc := 10 - 5 - 2         // Left-to-right: 3
-check := 5 == 5            // true
-mixed := "a" != "b"        // true
+grouped := (2 + 3) * (4 + 1)  // Parentheses override precedence
 
 // None
 nothing := none
@@ -668,34 +677,167 @@ result :=
 
 ## Design Decisions
 
-### Why Functional Style?
-- ✅ Simple operations (input → output)
-- ✅ No persistent state needed
-- ✅ Easier to test (pure functions)
-- ✅ Matches language philosophy
+### Parentheses: Expression Grouping ONLY
 
-### Why OO for Supervisor?
-- ✅ Stateful orchestration
-- ✅ Configuration management
-- ✅ Multiple method coordination
+**Ripple uses parentheses `()` exclusively for mathematical expression grouping.**
 
-### Why Arena for Temporary, GPA for Permanent?
-- Temporary data (tokens, AST) dies together → arena perfect
-- Permanent data (traces, results) lives longer → explicit allocation
-- Clear separation of lifetimes
-- No manual cleanup of temporaries
+**Allowed:**
+```ripple
+result := (a + b) * c           // Override precedence
+result := -(a + b)              // Group operand for unary
+result := ((x + y) * z) / w     // Nested grouping
+```
 
-### Why Keep deinit Methods?
-- Flexibility for non-arena usage (REPL, caching, hot-reload)
-- Explicit ownership (clear who frees what)
-- Harmless with arena (calling deinit is a no-op)
-- Future-proof for features not yet designed
+**NOT used for:**
+- Function calls: `add 10 32` (not `add(10, 32)`)
+- Lambda params: `x -> x * 2` (not `(x) -> x * 2`)
+- Tuples: Don't exist
+- Collections: Use `[]` for lists, `{}` for maps
 
-### Why No Boolean Operators?
-- Match expressions replace if/else
-- Pattern matching covers all boolean logic use cases
-- Simpler language
-- Philosophically consistent with functional approach
+**Rationale:**
+- Clear single purpose: "evaluate this first"
+- Your reference script design supports it (functions don't use parens)
+- Easy to enforce in parser (only in `parsePrimary`)
+- Solves real problem: `(a + b) * (c - d)`
+- Familiar to all programmers
+- Doesn't conflict with any future features
+
+### Boolean Operators vs Monadic `or`
+
+**Ripple distinguishes between boolean logic and monadic error handling:**
+
+**Monadic `or` (fallback on none):**
+```ripple
+config := #File.read path or default_config    // Fallback if read fails
+```
+
+**Boolean operators (`&&`, `||`, `!`):**
+```ripple
+valid := x > 0 && x < 100           // Logical AND
+either := x == 5 || x == 10         // Logical OR
+negated := !is_valid                // Logical NOT
+```
+
+**Rationale:**
+- Clear separation: `or` is for error handling, not boolean logic
+- Prevents confusion between monadic and boolean operations
+- `&&` and `||` are universal conventions
+- Enables complex guards in match expressions
+
+### Chained Comparisons
+
+**Ripple supports mathematical chained comparisons:**
+
+```ripple
+// Natural math notation:
+x |> match n ->
+  60 <= n <= 80 -> "comfortable"    // Chained comparison
+  n < 60 -> "cold"
+  n -> "hot"
+```
+
+**Rationale:**
+- Natural mathematical notation
+- Reduces need for boolean `&&` in simple range checks
+- Clear and readable
+- Common in Python, Julia, other modern languages
+
+**Limitation:** Only works for ranges on single variable. Complex logic still needs `&&`/`||`:
+```ripple
+// Need boolean operators for:
+x > 0 && x % 2 == 0        // Multiple conditions
+x == 5 || x == 10          // Non-contiguous values
+```
+
+### Match Expressions (No `if` Keyword!)
+
+**Ripple uses match expressions for all conditional logic. Patterns ARE the conditions.**
+
+**Basic syntax:**
+```ripple
+value |> match binding ->
+  condition_expression -> result
+  condition_expression -> result
+  any -> default_result
+```
+
+**The binding is available in ALL arms:**
+```ripple
+x |> match n ->
+  n > 60 -> "hot: " + n         // n is available
+  n < 32 -> "cold: " + n        // n is available
+  any -> "mild: " + n           // n is still available
+```
+
+**Examples:**
+```ripple
+// Temperature check
+temperature |> match t ->
+  60 <= t <= 80 -> "comfortable"    // Chained comparison
+  t < 60 -> "cold"
+  t -> "hot"                        // Catch-all (no 'any' needed if logically exhaustive)
+
+// FizzBuzz
+n |> match x ->
+  x % 15 == 0 -> "FizzBuzz"
+  x % 3 == 0 -> "Fizz"
+  x % 5 == 0 -> "Buzz"
+  any -> x                          // Return number itself
+
+// Complex guards
+value |> match v ->
+  v > 0 && v % 2 == 0 -> "positive even"
+  v % 3 == 0 || v % 5 == 0 -> "divisible"
+  v < 0 -> "negative"
+  any -> "other"
+
+// Literal patterns (shorthand for equality)
+status |> match s ->
+  "active" -> "running"             // Shorthand for s == "active"
+  "paused" -> "stopped"
+  any -> "unknown"
+
+// Result type matching
+@fetch_user(id) |> match ->
+  ok(data, meta) -> data
+  err(msg, meta) -> none
+  // No 'any' needed - Result only has ok/err
+```
+
+**Exhaustiveness checking (Zig-style):**
+- **Exhaustive types** (boolean, ADTs): No `any` required if all cases covered
+- **Non-exhaustive types** (numbers, strings, guards): `any` required
+- Compiler enforces exhaustiveness
+
+```ripple
+// Boolean - exhaustive, no 'any' needed
+flag |> match b ->
+  true -> "on"
+  false -> "off"
+
+// Number - non-exhaustive, 'any' required
+x |> match n ->
+  n > 0 -> "positive"
+  any -> "other"              // Required! Compiler error without it
+
+// Result - exhaustive, no 'any' needed
+@Net.get(url) |> match ->
+  ok(body, meta) -> body
+  err(msg, meta) -> none      // All constructors covered
+```
+
+**Key insight:** Match branches are NOT lambdas - they're pattern match arms that:
+- Are evaluated conditionally (only if guard matches)
+- Can't be extracted as standalone values
+- Capture outer scope like lambdas
+- Are part of the match expression structure
+
+**Rationale:**
+- No `if` keyword needed - patterns ARE conditions
+- Cleaner syntax than `when` or `if` guards
+- Consistent with functional paradigm
+- `any` keyword is explicit and clear
+- Exhaustiveness checking catches bugs at compile time
 
 ### Why No Variable Shadowing?
 
@@ -721,63 +863,28 @@ config := #File.read path
   or #Map.new {default: true}
 ```
 
-**Why no exception for "x := x + 1"?**
-Even simple rebinding should use pipelines or unique names:
-```ripple
-// Bad (not allowed)
-count := 1
-count := count + 1  // ERROR: count already defined
+### Why Functional Style for Core Components?
+- ✅ Simple operations (input → output)
+- ✅ No persistent state needed
+- ✅ Easier to test (pure functions)
+- ✅ Matches language philosophy
 
-// Good - explicit progression
-count := 1
-count_incremented := count + 1
-final_count := count_incremented + 1
+### Why OO for Supervisor?
+- ✅ Stateful orchestration
+- ✅ Configuration management
+- ✅ Multiple method coordination
 
-// Or use a pipeline (future)
-count := 1 |> increment |> increment
-```
+### Why Arena for Temporary, GPA for Permanent?
+- Temporary data (tokens, AST) dies together → arena perfect
+- Permanent data (traces, results) lives longer → explicit allocation
+- Clear separation of lifetimes
+- No manual cleanup of temporaries
 
-### Why No Parentheses for Grouping? (Yet)
-
-**Decision:** Ripple does not currently support parentheses `()` for expression grouping.
-
-**Rationale:**
-- **Minimalism:** Don't add features until proven necessary
-- **Precedence handles most cases:** Unary operators and precedence rules cover common needs
-- **Can always add later:** If users demonstrate a real need, we'll add them
-- **Philosophy:** "Explicitness > writability" - if you need complex grouping, break into steps
-
-**Known limitation:**
-```ripple
-# Cannot express: -(a - b) directly
-# Workaround: use intermediate variable
-temp := a - b
-result := -temp
-
-# Or later with functions:
-result := negate(a - b)
-```
-
-**When we'll add them:** When a user shows a real-world use case that can't be solved with:
-1. Intermediate variables
-2. Different operator ordering
-3. Function composition
-
-**Current workarounds:**
-```ripple
-# Most cases work fine without parens
-x := -5 * 3        # -15 (unary - has highest precedence)
-y := 2 + 3 * 4     # 14 (precedence: * before +)
-z := -x + -y       # Negate multiple values
-
-# Edge case: -(a - b)
-# Workaround 1: intermediate variable
-temp := a - b
-result := -temp
-
-# Workaround 2: rewrite mathematically
-result := -a + b   # Equivalent to -(a - b)
-```
+### Why Keep deinit Methods?
+- Flexibility for non-arena usage (REPL, caching, hot-reload)
+- Explicit ownership (clear who frees what)
+- Harmless with arena (calling deinit is a no-op)
+- Future-proof for features not yet designed
 
 ---
 
