@@ -54,7 +54,6 @@ x := 42                    // Type inferred
 name := "alice"            // Immutable by default
 active := true
 nothing := none
-person: string = "bob"     // Explicit typing allowed
 
 // No shadowing allowed - use pipelines instead
 result := 1
@@ -69,11 +68,10 @@ result := 1
 add := a, b -> a + b
 result := add 10 32        // 42
 
-// Multi-line
+// Multi-line (implicit return of last expression)
 process := x ->
   y := x + 1
-  z := y * 2
-  z                        // Implicit return
+  y * 2
 ```
 
 ### Pipelines
@@ -354,14 +352,11 @@ except (requests.RequestException, TimeoutError) as e:
 // Ripple: Retry logic as a task combinator
 @wait_for_healthy := server health_url max_retries ->
   check := ->
-    @Net.get ("http://" + server + health_url) {timeout: 5}
+    data := @Net.get ("http://" + server + health_url) {timeout: 5}
       |> @Map.parse_json _
-      |> @Result.ensure (data -> data.status == "healthy") "Server not healthy"
+    @Result.ensure data (d -> d.status == "healthy") "Server not healthy"
   
-  @Task.retry check {
-    max_attempts: max_retries,
-    delay: 3000
-  }
+  @Task.retry check {max_attempts: max_retries, delay: 3000}
 
 // Usage: inline error handling
 @wait_for_healthy server health_url 10
@@ -397,14 +392,11 @@ except ValueError as e:
 // Ripple: Return Result type, compose naturally
 @validate_config := config ->
   required := ["servers", "app_name", "deploy_user", "health_check_url"]
-  
-  missing :=
-    required
-      |> #List.filter (field -> (#Map.get config field) == none)
+  missing := required
+    |> #List.filter (field -> (#Map.get config field) == none)
   
   (#List.is_empty missing) |> match ->
-    false ->
-      err("Missing required fields: " + (#String.join missing ", "))
+    false -> err("Missing required fields: " + (#String.join missing ", "))
     true ->
       (#List.is_empty config.servers) |> match ->
         true -> err("No servers specified")
