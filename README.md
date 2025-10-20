@@ -1,4 +1,3 @@
-
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -52,24 +51,29 @@ config :=
 
 ### Execution Hierarchy: System → Process → Task
 
-Ripple organizes execution in three levels:
+Ripple organizes execution in three levels, each opt-in:
 
-**#System** - Configure the VM/runtime environment
 ```
-#System.verbosity = "verbose"       // Trace every task
-#System.max_memory = "2GB"          // Memory limits
+// Script without configuration - just works
+servers := @get_servers
+servers |> @List.each (s -> @deploy s)
+
+// Add memory limits as you scale
+#System.max_memory = "512MB"
+servers := @get_servers
+servers |> @List.each (s -> @deploy s)
+
+// Production: comprehensive observability
+#System.max_memory = "512MB"
+#System.trace_to = "aws://logs/deployments"
+#Process.timeout = 600000
+servers := @get_servers
+servers |> @List.each (s -> @deploy s)
 ```
 
-**#Process** - Configure the current program execution
-```
-#Process.timeout = 300000           // Global timeout (ms)
-#Process.retry_defaults = {max_attempts: 3, delay: 1000}
-```
-
-**@Task** - Individual operations (every expression is a task)
-```
-@Task.retry check_health {max_attempts: 10, delay: 5000}
-```
+**#System** - Configure the runtime environment (memory, logging)
+**#Process** - Configure this program's execution (timeout, retries)
+**Task** - Individual operations (every expression is a task)
 
 ### Variables & Types
 
@@ -113,7 +117,19 @@ result :=
 
 Ripple's killer feature: **caller-driven error interpretation**. The same function can be used monadically (explicit error handling) or tolerantly (fail gracefully).
 
-**Critical: Unhandled Result types halt compilation.** You must explicitly handle errors through pattern matching, convert to tolerant mode with `#`, or propagate them upward.
+**By default, you must explicitly choose `@` or `#` for every call.** This makes error handling visible and intentional. However, you can set a default mode for convenience:
+
+```
+// Opt into a default mode for the whole script
+#Process.implicit_hash = true   // Default to tolerant (#)
+// or
+#Process.implicit_at = true     // Default to explicit (@)
+
+// Now calls without prefix use your chosen default
+config := File.read path        // Uses your default mode
+```
+
+**Critical: Unhandled Result types halt compilation.** When using `@`, you must explicitly handle errors through pattern matching or convert with escape hatches like `unwrap_or_die`.
 
 #### Monadic (`@`): Explicit Error Handling
 
@@ -124,7 +140,7 @@ response := @Net.get "https://api.example.com/data"
 // MUST handle the Result - compilation fails otherwise
 response |> match ->
   ok(body, meta) ->
-    #IO.stdout ("Success: " + body)
+    @IO.stdout ("Success: " + body)
   err(msg, meta) ->
     @Slack.post ("Error: " + msg)
 ```
@@ -139,6 +155,18 @@ config :=
   or #Map.new { env: "dev" }
 
 // No explicit error handling needed - errors become none
+```
+
+#### Escape Hatches: When Failure is a Bug
+
+```
+// When you KNOW it should work - crash loudly if it doesn't
+config := @File.read "./config.json" 
+  |> @Result.unwrap_or_die
+
+// Or with a message
+user_id := @Map.get users "alice" 
+  |> @Result.unwrap_or_die "Alice must exist in test data"
 ```
 
 ### Result Type: Dual Channel Architecture
@@ -213,8 +241,10 @@ result :=
 | `\|>` | Pipeline forward | `data \|> process \|> save` |
 | `or` | Fallback on none | `#File.read path or default` |
 | `then` | Sequence (only if left not none) | `#File.read path then #Map.parse _` |
-| `tap` | Side effects | `result \|> tap err -> #Log.error _` |
+| `tap` | Side effects | `result \|> tap err -> @Log.error _` |
 | `match` | Pattern matching | `value \|> match -> ...` |
+| `@` | Monadic/explicit mode | `@Net.get url` |
+| `#` | Tolerant mode | `#File.read path or default` |
 
 ## Current Status
 
