@@ -78,6 +78,7 @@ x := 42                    // Type inferred
 name := "alice"            // Immutable by default
 active := true
 nothing := none
+user: string = "bob"       // Explicit allowed
 
 // No shadowing allowed - use pipelines instead
 result := 1
