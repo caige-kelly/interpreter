@@ -418,12 +418,12 @@ except ValueError as e:
 @validate_config := config ->
   required := ["servers", "app_name", "deploy_user", "health_check_url"]
   missing := required
-    |> #List.filter (field -> (#Map.get config field) == none)
+    |> #List.filter field -> #Map.get config field == none
   
-  (#List.is_empty missing) |> match ->
-    false -> err("Missing required fields: " + (#String.join missing ", "))
+  #List.is_empty missing |> match ->
+    false -> err("Missing required fields: " + #String.join missing ", ")
     true ->
-      (#List.is_empty config.servers) |> match ->
+      #List.is_empty config.servers |> match ->
         true -> err("No servers specified")
         false -> ok(config)
 
