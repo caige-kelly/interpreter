@@ -1,3 +1,4 @@
+
 # Ripple
 
 **A functional, pipeline-oriented language with explicit error handling**
@@ -18,12 +19,11 @@ try {
   return defaultValue;
 }
 
-// Ripple: errors flow through pipelines naturally
+// Ripple: errors flow naturally through tolerant pipelines
 data :=
-  @Net.get url
-    |> @Map.parse _
-    |> @Map.validate schema _
-    |> tap err(msg, _) -> @Log.error msg
+  #Net.get url
+    |> #Map.parse _
+    |> #Map.validate schema _
     or default_value
 ```
 
