@@ -150,11 +150,14 @@ except Exception as e:
 
 **Ripple:** Errors flow through your pipeline
 ```
-step1
-  then step2
-  then step3
-  then result -> result
-  // Unhandled errors fail the script automatically
+result := step1
+  |> step2
+  |> step3
+  |> match ->
+    ok(v) -> v
+    err(e) -> IO.Stdout e then none
+  // find out what the error was and don't return anything
+ 
 ```
 
 **All functions return Result by default. Unhandled errors fail the script automatically:**
