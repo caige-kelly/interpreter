@@ -12,7 +12,7 @@ pub const ParseError = error{
     OutOfMemory,
 };
 
-// Pure data - no methods except helpers
+// Pure data
 const ParseState = struct {
     tokens: []const Token,
     current: usize,
@@ -42,7 +42,7 @@ const ParseState = struct {
 // Main entry point - free function
 pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
     var state = ParseState{ .tokens = tokens, .current = 0 };
-    var exprs = try std.ArrayList(Ast.Expr).initCapacity(allocator, 4096);
+    var exprs = try std.ArrayList(Ast.Expr).initCapacity(allocator, 0);
 
     while (!state.isAtEnd()) {
         skipNewlines(&state);
@@ -154,8 +154,13 @@ fn skipNewlines(state: *ParseState) void {
     }
 }
 
+// Tests
+const lex = @import("lexer.zig");
+
 test "parse multiplication - manual tokens" {
     const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
     const tokens = [_]Token{
         Token{ .type = .IDENTIFIER, .lexeme = "x", .literal = null, .line = 1, .column = 1 },
@@ -166,8 +171,8 @@ test "parse multiplication - manual tokens" {
         Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 11 },
     };
 
-    var program = try parse(&tokens, allocator); // Clean! Just one call
-    defer program.deinit(); // Only one defer!
+    var program = try parse(&tokens, arena.allocator());
+    defer program.deinit();
 
     try testing.expectEqual(@as(usize, 1), program.expressions.len);
 

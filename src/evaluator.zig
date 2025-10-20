@@ -1,7 +1,14 @@
 const std = @import("std");
 const Ast = @import("ast.zig");
 
-pub const EvalError = error{ UndefinedVariable, VariableAlreadyDefined, ExpressionDontExist, OutOfMemory };
+pub const EvalError = error{
+    UndefinedVariable,
+    VariableAlreadyDefined,
+    ExpressionDontExist,
+    OutOfMemory,
+    TypeMismatch,
+    DivisionByZero,
+};
 
 pub const Value = union(enum) {
     number: f64,
@@ -10,122 +17,203 @@ pub const Value = union(enum) {
     none,
 };
 
-pub const EvalConfig = struct { enable_trace: bool = false };
+pub const EvalConfig = struct {
+    enable_trace: bool = false,
+};
 
-pub const EvalResult = struct {
+pub const TraceEntry = struct {
     result: Value,
 };
 
-pub const Evaluator = struct {
+pub const EvaluationResult = struct {
+    value: Value,
+    trace: []const TraceEntry,
     allocator: std.mem.Allocator,
-    globals: std.StringHashMap(Value), // name → value mapping
-    config: EvalConfig,
-    results: std.ArrayList(EvalResult),
 
-    pub fn init(alloc: std.mem.Allocator, config: EvalConfig) !Evaluator {
-        //alloc is an areana
-
-        const g = std.StringHashMap(Value).init(alloc);
-        const r = try std.ArrayList(EvalResult).initCapacity(alloc, 16); //init depreicated in zig 15.1
-
-        return .{ .allocator = alloc, .globals = g, .config = config, .results = r };
-    }
-
-    pub fn deinit(self: *Evaluator) void {
-        self.globals.deinit();
-        self.results.deinit(self.allocator);
-    }
-
-    // Functions that evaluate different AST nodes
-    pub fn evaluate(self: *Evaluator, program: Ast.Program) EvalError!Value {
-        var last_value = Value{ .none = {} };
-        for (program.expressions) |expressions| {
-            last_value = try self.evalExpr(expressions);
-
-            if (self.config.enable_trace)
-                try self.results.append(self.allocator, .{ .result = last_value });
-        }
-        return last_value;
-    }
-    fn evalExpr(self: *Evaluator, expr: Ast.Expr) EvalError!Value {
-        return switch (expr) {
-            .literal => |lit| self.evalLiteral(lit),
-            .identifier => |iden| try self.evalIdentifier(iden),
-            .assignment => |assign| try self.evalAssignment(assign),
-            else => return error.ExpressionDontExist,
-        };
-    }
-    fn evalAssignment(self: *Evaluator, assign: Ast.AssignExpr) EvalError!Value {
-        if (self.globals.contains(assign.name)) {
-            return error.VariableAlreadyDefined;
-        }
-        const value = try self.evalExpr(assign.value.*);
-        try self.globals.put(assign.name, value);
-        return value;
-    }
-    fn evalLiteral(self: *Evaluator, lit: Ast.Literal) Value {
-        _ = self;
-        return switch (lit) {
-            .string => |s| Value{ .string = s },
-            .number => |n| Value{ .number = n },
-            .boolean => |b| Value{ .boolean = b },
-            .none => Value{ .none = {} },
-        };
-    }
-    fn evalIdentifier(self: *Evaluator, name: []const u8) EvalError!Value {
-        if (self.globals.get(name)) |value| {
-            return value;
-        } else {
-            return error.UndefinedVariable;
-        }
-    }
-
-    pub fn get_trace(self: *Evaluator) []EvalResult {
-        return self.results.items;
+    pub fn deinit(self: *EvaluationResult) void {
+        self.allocator.free(self.trace);
     }
 };
 
-// ... your existing Evaluator code ...
+// Pure data - evaluation state
+const EvalState = struct {
+    globals: std.StringHashMap(Value),
+    results: std.ArrayList(TraceEntry),
+    config: EvalConfig,
+    allocator: std.mem.Allocator,
+};
 
-// ===== TESTS =====
+// Main entry point - free function
+pub fn evaluate(
+    program: Ast.Program,
+    allocator: std.mem.Allocator,
+    config: EvalConfig,
+) !EvaluationResult {
+    var state = EvalState{
+        .globals = std.StringHashMap(Value).init(allocator),
+        .results = try std.ArrayList(TraceEntry).initCapacity(allocator, 16),
+        .config = config,
+        .allocator = allocator,
+    };
+    defer state.globals.deinit();
+    defer state.results.deinit(allocator);
+
+    var last_value = Value{ .none = {} };
+
+    for (program.expressions) |expr| {
+        last_value = try evalExpr(&state, expr);
+
+        if (state.config.enable_trace) {
+            try state.results.append(allocator, .{ .result = last_value });
+        }
+    }
+
+    // Copy trace to return (owned by caller)
+    const trace_copy = try allocator.alloc(TraceEntry, state.results.items.len);
+    @memcpy(trace_copy, state.results.items);
+
+    return EvaluationResult{
+        .value = last_value,
+        .trace = trace_copy,
+        .allocator = allocator,
+    };
+}
+
+fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
+    return switch (expr) {
+        .literal => |lit| evalLiteral(lit),
+        .identifier => |name| evalIdentifier(state, name),
+        .assignment => |assign| try evalAssignment(state, assign),
+        .binary => |bin| try evalBinary(state, bin),
+        else => error.ExpressionDontExist,
+    };
+}
+
+fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
+    if (state.globals.contains(assign.name)) {
+        return error.VariableAlreadyDefined;
+    }
+
+    const value = try evalExpr(state, assign.value.*);
+    try state.globals.put(assign.name, value);
+    return value;
+}
+
+fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
+    const left = try evalExpr(state, bin.left.*);
+    const right = try evalExpr(state, bin.right.*);
+
+    // Only numbers for now
+    if (left != .number or right != .number) {
+        return error.TypeMismatch;
+    }
+
+    const left_num = left.number;
+    const right_num = right.number;
+
+    return switch (bin.operator) {
+        .STAR => Value{ .number = left_num * right_num },
+        .SLASH => blk: {
+            if (right_num == 0) return error.DivisionByZero;
+            break :blk Value{ .number = left_num / right_num };
+        },
+        .PLUS => Value{ .number = left_num + right_num },
+        .MINUS => Value{ .number = left_num - right_num },
+        else => error.ExpressionDontExist,
+    };
+}
+
+fn evalLiteral(lit: Ast.Literal) Value {
+    return switch (lit) {
+        .string => |s| Value{ .string = s },
+        .number => |n| Value{ .number = n },
+        .boolean => |b| Value{ .boolean = b },
+        .none => Value{ .none = {} },
+    };
+}
+
+fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
+    if (state.globals.get(name)) |value| {
+        return value;
+    } else {
+        return error.UndefinedVariable;
+    }
+}
+
+// Tests
 const testing = std.testing;
 
 test "evaluate literal number" {
     const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
 
-    var lexer = try @import("lexer.zig").Lexer.init("x := 42", allocator);
-    defer lexer.deinit();
-    const tokens = try lexer.scanTokens();
-    defer allocator.free(tokens);
-
-    var parser = try @import("parser.zig").Parser.init(tokens, allocator);
-    var program = try parser.parse();
-    defer program.deinit(); // ← Add this!
-
-    var evaluator = try Evaluator.init(allocator, .{});
-    defer evaluator.deinit();
-
-    const result = try evaluator.evaluate(program);
-    try testing.expectEqual(Value{ .number = 42.0 }, result);
-}
-
-test "undefined variable error" {
-    const allocator = testing.allocator;
-
-    var lexer = try @import("lexer.zig").Lexer.init("y := unknown", allocator);
-    defer lexer.deinit();
-    const tokens = try lexer.scanTokens();
-    defer allocator.free(tokens);
-
-    var parser = try @import("parser.zig").Parser.init(tokens, allocator);
-    var program = try parser.parse();
+    const tokens = try @import("lexer.zig").tokenize("x := 42", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    var evaluator = try Evaluator.init(allocator, .{});
-    defer evaluator.deinit();
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
 
-    const result = evaluator.evaluate(program);
+    try testing.expectEqual(@as(f64, 42.0), result.value.number);
+}
+
+test "undefined variable" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("y := unknown", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const result = evaluate(program, arena.allocator(), .{});
     try testing.expectError(error.UndefinedVariable, result);
 }
 
-// Add more tests...
+test "evaluate multiplication" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("x := 3 * 4", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 12.0), result.value.number);
+}
+
+test "evaluate division" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("x := 10 / 2", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
+
+    try testing.expectEqual(@as(f64, 5.0), result.value.number);
+}
+
+test "evaluate with trace enabled" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("x := 10\ny := 20", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var result = try evaluate(program, arena.allocator(), .{ .enable_trace = true });
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 2), result.trace.len);
+    try testing.expectEqual(@as(f64, 10.0), result.trace[0].result.number);
+    try testing.expectEqual(@as(f64, 20.0), result.trace[1].result.number);
+}

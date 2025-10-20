@@ -1,782 +1,437 @@
-# Ripple Language - Project Handoff (Updated)
+# Ripple Language - Project Handoff (Updated After Refactoring)
 
 ## Project Status
-- **Lexer:** ✅ Complete and working
-- **Parser:** ✅ Complete for assignments (MVP)
-- **Evaluator:** ✅ Complete with trace collection (MVP)
-- **Supervisor:** ✅ Complete (MVP with retry logic)
-- **Tests:** ✅ Inline with source code (Zig style)
+- **Lexer:** ✅ Complete - Functional style
+- **Parser:** ✅ Complete - Functional style, supports binary operators (`*`, `/`)
+- **Evaluator:** ✅ Complete - Functional style, supports binary operators
+- **Supervisor:** ✅ Complete - Arena-based with proper trace handling
+- **Tests:** ✅ All passing, zero memory leaks
+- **Architecture:** ✅ Refactored to functional style with arena allocators
 - **Type Checker:** ❌ Not started
 - **VM with Bytecode:** ❌ Not started (future)
 
-## What This Is
-Ripple is a functional scripting language designed to be embedded in infrastructure/ops tools.
+---
 
-### Core Purpose
-**"A language for infrastructure code: Lua + Elixir's reliability model + modern error handling"**
+## Major Architectural Change: Functional Style
 
-- Embedded scripting (like Lua)
-- Supervisor model for process management and restarts
-- Strong typing with type inference
-- Effect tags (functions declare what they do: `[io]`, `[net]`, etc.)
-- Result types for explicit error handling
-- No if/else (match only)
-- No shadowing (one binding per name)
-- Configurable runtime (logging, memory limits, timeouts)
+All components refactored from OO to functional style:
 
-### Philosophy
-**"Make bugs impossible, not syntax pretty."**
-- Explicit > Clever
-- Effects matter (know what functions do)
-- Errors first (design around preventing mistakes)
-- Types help (catch bugs at compile time)
-- Keep it small
+### Before (OO):
+```zig
+var lexer = try Lexer.init(source, allocator);
+defer lexer.deinit();
+const tokens = try lexer.tokenize();
+
+var parser = try Parser.init(tokens, allocator);
+defer parser.deinit();
+const program = try parser.parse();
+```
+
+### After (Functional):
+```zig
+const tokens = try tokenize(source, allocator);
+const program = try parse(tokens, allocator);
+// No deinit needed - arena handles everything
+```
+
+**Why:** Simpler, clearer ownership, matches functional language philosophy.
 
 ---
 
-## Language Design (Locked In)
+## Memory Management Strategy
 
-### Core Features
-1. **Everything is a lambda** — No `fn` keyword. `add := |a, b| -> a + b`
-2. **Immutability, no shadowing** — Only `:=` for binding. One name = one binding.
-3. **Type inference** — Static types, inferred. Optional explicit annotations.
-4. **Unified `number` type** — All numbers are `f64`. No int/float distinction (for prototype).
-5. **`@` and `#` caller-driven semantics:**
-   - `@` exposes Result explicitly: `ok(value, meta)` or `err(msg, meta)`
-   - `#` collapses to `value | none`
-6. **Operators:**
-   - `|>` pipeline
-   - `or` (fallback if left is none)
-   - `then` (sequence if left not none)
-   - `tap` (side effects without changing value)
-   - `match` (pattern matching, ONLY branching construct)
-7. **No if/else** — `match` handles all branching
-8. **Indentation-based blocks** — Python style, strict continuation rules
-9. **Effect tags on functions** — `[io]`, `[net]`, `[fx]` declare side effects
-10. **Supervisor model** — Built-in process management, restarts, monitoring
-
-### Assignment Forms (IMPLEMENTED ✅)
-
-**Two forms:**
-
-1. **Inferred type:** `x := 10`
-   - Uses `:=` operator
-   - Type is inferred by type checker (future)
-   - Parser stores `type_annotation = null`
-
-2. **Explicit type:** `x: number = 10`
-   - Uses `: type =` syntax
-   - Type is validated by type checker (future)
-   - Parser stores `type_annotation = Type.number`
-
-**Invalid:**
-- `x = 10` — ERROR: must use `:=` or `: type =`
-
-### Lambda Syntax (DESIGN ONLY, NOT IMPLEMENTED)
-
-```ripple
-# Single param
-double := |x| -> x * 2
-
-# Multiple params
-add := |a, b| -> a + b
-
-# With type annotations
-process := |data: string| -> data |> transform
-
-# Multi-line body (indentation-based)
-complex := |x| ->
-  step1 := transform(x)
-  step2 := validate(step1)
-  step2
-```
-
-**Key rules:**
-- Params wrapped in `|...|` (pipe delimiters)
-- `->` separates params from body
-- Multi-line bodies require indent after `->`
-- Last expression is implicit return
-
-### Example Syntax
-
-```ripple
-# ✅ WORKS NOW
-x := 10
-name := "alice"
-active: boolean = true
-y := x  # Identifier lookup
-
-# ❌ NOT IMPLEMENTED YET (but designed)
-# Binary operators
-sum := x + y
-
-# Pipelines
-result := data |> clean |> validate
-
-# Lambdas
-double := |x| -> x * 2
-
-# Match expressions
-status := code |> match ->
-  200 -> "ok"
-  404 -> "not found"
-  any -> "error"
-
-# Function calls
-result := process(data, config)
-```
-
----
-
-## File Structure (Current)
-
-```
-src/
-  main.zig           — Entry point, orchestration
-  token.zig          — Token, TokenType, Literal definitions
-  lexer.zig          — Lexer (complete) + tests inline
-  types.zig          — Type enum (separate from Literal)
-  ast.zig            — AST node definitions
-  parser.zig         — Parser (assignments complete) + tests inline
-  evaluator.zig      — Evaluator (complete for MVP) + tests inline
-  supervisor.zig     — Supervisor (complete for MVP) + tests inline
-  errors.zig         — Error reporting utilities
-
-  # Future:
-  type_checker.zig   — [TODO] Type checking pass
-  vm.zig             — [TODO] VM with bytecode execution
-build.zig            — Build configuration
-```
-
----
-
-## Lexer (Complete ✅)
-
-### What It Does
-- Tokenizes Ripple source code
-- Tracks indentation (emits `INDENT`/`DEDENT` tokens)
-- Handles `:=`, `:`, `=` correctly
-- Numbers stored as `f64`
-- Comments (`//` and `#`) silently consumed
-
-### Key Tokens
-- `COLON_EQUAL` (`:=`) — Inferred assignment
-- `COLON` (`:`) — Type annotation start
-- `EQUAL` (`=`) — Explicit assignment value
-- `PIPE` (`|`) — Lambda param delimiter (future)
-- `PIPELINE` (`|>`) — Pipeline operator (future)
-- `ARROW` (`->`) — Lambda body separator (future)
-- `INDENT`/`DEDENT` — Block structure
-
----
-
-## Parser (Complete for MVP ✅)
-
-### What Works Now
-
-**Assignments:**
-```ripple
-x := 10              # Inferred
-name: string = "alice"  # Explicit
-```
-
-**Literals and identifiers:**
-- Numbers, strings, booleans, none
-- Identifiers with lookup
-
-### What's Missing (Future)
-
-- Binary operators (`+`, `-`, `*`, `/`, `==`, etc.)
-- Pipeline operators (`|>`, `or`, `then`)
-- Lambdas (`|params| -> body`)
-- Match expressions
-- Function calls
-- Collections (`[1, 2, 3]`, `{ key: value }`)
-
-### Parser Structure (Precedence Chain)
-
-```
-parse()
-  → parseAssignment()  ✅ DONE
-    → parseLambda()    ❌ TODO
-      → parsePipeline() ❌ TODO
-        → parseBinary() ❌ TODO
-          → parseCall() ❌ TODO
-            → parsePrimary() ✅ DONE
-```
-
----
-
-## Evaluator (Complete for MVP ✅)
-
-### What It Does
-
-**Tree-walk interpreter:**
-- Executes assignments
-- Evaluates literals
-- Looks up identifiers in symbol table
-- Detects errors (undefined variables, redefinitions)
-- Collects execution trace (configurable)
-
-### Architecture
+### Arena Per Execution (Standard Pattern)
 
 ```zig
-pub const Evaluator = struct {
-    allocator: std.mem.Allocator,
-    globals: std.StringHashMap(Value),      // Symbol table
-    config: EvalConfig,                     // Runtime configuration
-    results: std.ArrayList(EvalResult),     // Execution trace
+fn attemptRun(source: []const u8) !RunAttempt {
+    var arena = ArenaAllocator.init(self.allocator);
+    defer arena.deinit();  // Frees everything temporary
 
-    pub fn evaluate(program: Ast.Program) !Value;
-    fn evalExpr(expr: Ast.Expr) !Value;
-    fn evalLiteral(lit: Ast.Literal) Value;
-    fn evalIdentifier(name: []const u8) !Value;
-    fn evalAssignment(assign: Ast.AssignExpr) !Value;
-    pub fn get_trace() []EvalResult;
+    // All temporary data uses arena
+    const tokens = try tokenize(source, arena.allocator());
+    const program = try parse(tokens, arena.allocator());
+    var eval_result = try evaluate(program, arena.allocator(), config);
+    defer eval_result.deinit();
+
+    // Copy what needs to survive to permanent memory
+    const trace_copy = try self.allocator.alloc(TraceEntry, eval_result.trace.len);
+    @memcpy(trace_copy, eval_result.trace);
+
+    return RunAttempt{
+        .trace = trace_copy,  // Lives in self.allocator
+        .value = eval_result.value,
+        // ...
+    };
+}
+```
+
+**Key Pattern:**
+- **Arena** = temporary allocations (tokens, AST, eval state)
+- **Permanent allocator** = results that outlive execution (traces, values)
+- **Copy** between them when needed
+
+---
+
+## Current Implementation
+
+### 1. Lexer (lexer.zig) - Functional
+
+```zig
+pub fn tokenize(source: []const u8, allocator: Allocator) ![]Token
+```
+
+**Features:**
+- Functional style (no state struct with methods)
+- Internal `LexState` for tracking position
+- Indentation tracking (INDENT/DEDENT tokens)
+- All operators: `+`, `-`, `*`, `/`, `==`, `!=`, `:=`, `|>`, etc.
+- String literals with escape sequences
+- Comments (`//`)
+
+**Tests:** 4 passing (numbers, assignments, multiplication, strings)
+
+---
+
+### 2. Parser (parser.zig) - Functional
+
+```zig
+pub fn parse(tokens: []const Token, allocator: Allocator) !Program
+```
+
+**Features:**
+- Functional style (no Parser struct)
+- Internal `ParseState` for tracking position
+- Precedence climbing for binary operators
+- Supports: assignments, literals, identifiers, binary expressions (`*`, `/`)
+
+**Current Precedence Chain:**
+```
+parseAssignment()
+  → parseMultiplicative()  ✅ (* /)
+    → parsePrimary()       ✅ (literals, identifiers)
+```
+
+**Tests:** 1 passing (multiplication in assignment)
+
+---
+
+### 3. Evaluator (evaluator.zig) - Functional
+
+```zig
+pub fn evaluate(
+    program: Program,
+    allocator: Allocator,
+    config: EvalConfig,
+) !EvaluationResult
+
+pub const EvaluationResult = struct {
+    value: Value,
+    trace: []const TraceEntry,
+    allocator: Allocator,
+
+    pub fn deinit(self: *EvaluationResult) void;
 };
 ```
 
-### Configuration
+**Features:**
+- Functional style (no Evaluator struct)
+- Internal `EvalState` for globals and trace
+- Supports: literals, identifiers, assignments, binary operators (`*`, `/`, `+`, `-`)
+- Optional trace collection
+- Type checking (numbers only for operators)
+- Division by zero detection
 
-```zig
-pub const EvalConfig = struct {
-    enable_trace: bool = false,  // Collect execution trace
-    // Future: memory limits, timeouts, etc.
-};
-```
-
-### Value Representation
-
-```zig
-pub const Value = union(enum) {
-    number: f64,
-    string: []const u8,
-    boolean: bool,
-    none,
-    // Future: function, list, map
-};
-```
-
-### Error Handling
-
-```zig
-pub const EvalError = error{
-    UndefinedVariable,
-    VariableAlreadyDefined,
-    // Future: more errors
-};
-```
+**Tests:** 5 passing (literals, undefined vars, multiplication, division, trace)
 
 ---
 
-## Supervisor (Complete ✅)
-
-### What It Does
-
-**Process supervision with retry logic:**
-- Runs Ripple programs under monitoring
-- Restarts on evaluation errors (configurable max restarts)
-- **Does NOT retry parse errors** (syntax errors can't be fixed by retrying)
-- Collects execution traces from all attempts
-- Measures duration across retries
-- Provides detailed results (success/failure, attempts, errors)
-
-### Architecture
+### 4. Supervisor (supervisor.zig) - OO Style (Intentional)
 
 ```zig
-pub const SupervisorConfig = struct {
-    max_restarts: u32 = 3,          // How many attempts
-    timeout_ms: ?u64 = null,        // [TODO] Thread-based timeout
-    enable_trace: bool = true,      // Collect execution traces
-};
-
 pub const Supervisor = struct {
     allocator: Allocator,
     config: SupervisorConfig,
 
-    // Public API
-    pub fn run(source: []const u8) !SupervisionResult;
-
-    // Internal (unit-tested)
-    fn attemptRun(source: []const u8) !RunAttempt;
-    fn finishAttempt(...) !RunAttempt;
-    fn copyTrace(...) ![]const EvalResult;
+    pub fn run(self: *Supervisor, source: []const u8) !SupervisionResult;
+    fn attemptRun(self: *Supervisor, source: []const u8) !RunAttempt;
 };
 ```
 
-### Two-Level Design
+**Why still OO?** Supervisor maintains state (config, allocator) and orchestrates multiple attempts. Makes sense as a stateful object.
 
-**Level 1: `attemptRun()` - Single Execution**
-```zig
-const RunAttempt = struct {
-    status: Status,  // success, eval_error, parse_error
-    value: ?Value,
-    err: ?anyerror,
-    trace: ?[]const EvalResult,  // null if parse error
-    duration_ms: u64,
-    memory_used: usize,
-};
-```
+**Features:**
+- Arena-based execution (temp data freed after each attempt)
+- Retry logic (eval errors only, not parse errors)
+- Trace copying to permanent memory
+- Duration measurement
+- Success/failure status tracking
 
-Runs the program **once**:
-1. Lex → Parse → Eval (using arena allocator)
-2. Copies trace to permanent memory
-3. Measures duration
-4. Returns detailed attempt result
-
-**Level 2: `run()` - Retry Loop**
-```zig
-pub const SupervisionResult = struct {
-    status: Status,  // success, failed_max_restarts, parse_error, timeout
-    attempts: u32,
-    final_value: ?Value,
-    trace: ?[]const EvalResult,  // From final attempt
-    duration_ms: u64,             // Total across all attempts
-    memory_used: usize,
-    last_error: ?anyerror,
-    allocator: Allocator,
-};
-```
-
-Orchestrates retries:
-1. Calls `attemptRun()` in a loop
-2. **Success** → Return immediately (no retry)
-3. **Parse error** → Return immediately (no retry)
-4. **Eval error** → Check if last attempt:
-   - If yes → Return `failed_max_restarts`
-   - If no → Free trace, retry
-5. Accumulates total duration across attempts
-
-### Retry Logic
-
-```
-Attempt 1: eval_error  → Free trace, retry
-Attempt 2: eval_error  → Free trace, retry
-Attempt 3: eval_error  → Keep trace, return failed_max_restarts
-
-OR
-
-Attempt 1: success     → Return immediately (attempts = 1)
-
-OR
-
-Attempt 1: parse_error → Return immediately (attempts = 1, no retry)
-```
-
-**Key insight:** Only eval errors are retried. Parse errors fail fast.
-
-### Memory Management
-
-**Arena for Temporary Allocations:**
-```zig
-var arena = std.heap.ArenaAllocator.init(self.allocator);
-defer arena.deinit();
-// Lexer, Parser, Evaluator all use arena.allocator()
-```
-
-**Permanent Allocator for Results:**
-```zig
-// Copy trace from arena to permanent memory
-fn copyTrace(temp_trace: []const EvalResult) ![]const EvalResult {
-    const trace_copy = try self.allocator.alloc(EvalResult, temp_trace.len);
-    @memcpy(trace_copy, temp_trace);
-    return trace_copy;
-}
-```
-
-**Why:** Trace must outlive the function. Arena is destroyed on return.
-
-### Testing Strategy
-
-**Unit Tests (test `attemptRun`):**
-- Success case (valid program)
-- Eval error case (undefined variable)
-- Parse error case (syntax error)
-
-**Integration Tests (test `run`):**
-- Success on first attempt
-- Max retries exhausted (eval error × 3)
-- Parse error doesn't retry
-
-All tests use `testing.allocator` to detect memory leaks.
-
-### Current Limitations
-
-- ❌ No timeout implementation (requires threads)
-- ❌ No memory tracking (returns 0)
-- ❌ Traces from failed retry attempts are discarded (only final kept)
-- ❌ No detailed trace mode (all attempts)
-
-### Future Enhancements
-
-**Timeout Support:**
-```zig
-// Spawn evaluator in thread
-// Monitor with timer
-// Kill thread if exceeds timeout_ms
-```
-
-**Memory Tracking:**
-```zig
-// Wrap allocator with GeneralPurposeAllocator
-// Read total_requested_bytes after each run
-```
-
-**Detailed Traces:**
-```zig
-pub const SupervisorConfig = struct {
-    detailed_traces: bool = false,  // Keep traces from all attempts
-};
-
-pub const SupervisionResult = struct {
-    all_traces: ?[][]const EvalResult,  // If detailed_traces enabled
-};
-```
+**Tests:** 6 passing (success, eval error, parse error, retries, multiplication)
 
 ---
 
-## Testing Framework (Inline with Code ✅)
+## What Works Right Now
 
-### Approach
-- **Tests live at the bottom of source files** (standard Zig practice)
-- Use Zig's built-in `std.testing`
-- Run with: `zig build test`
-- Simple build.zig tests `main.zig` which imports everything
+### Complete Pipeline
 
-### Why Inline?
-- Simpler than separate test directories
-- No complex module configuration needed
-- Standard Zig convention
-- Tests stay close to implementation
-
-### Test Pattern
-
-```zig
-// At bottom of evaluator.zig:
-
-const testing = std.testing;
-
-test "evaluate literal number" {
-    const allocator = testing.allocator;
-
-    var lexer = try @import("lexer.zig").Lexer.init("x := 42", allocator);
-    const tokens = try lexer.tokenize(allocator);
-    defer allocator.free(tokens);
-
-    var parser = @import("parser.zig").Parser.init(tokens, allocator);
-    const program = try parser.parse();
-    defer parser.deinit();
-
-    var evaluator = try Evaluator.init(allocator, .{});
-    defer evaluator.deinit();
-
-    const result = try evaluator.evaluate(program);
-    try testing.expectEqual(Value{ .number = 42.0 }, result);
-}
+```ripple
+result := 3 * 4
 ```
 
-### Current Tests
-- **Lexer:** Tokenization, indentation tracking
-- **Parser:** Assignment parsing, literals, identifiers
-- **Evaluator:** Literal evaluation, identifier lookup, assignment execution, error cases
-- **Supervisor:** Single attempt (success/eval error/parse error), retry logic, max retries
+**Execution flow:**
+1. **Tokenize:** `IDENTIFIER`, `COLON_EQUAL`, `NUMBER`, `STAR`, `NUMBER`, `EOF`
+2. **Parse:** `Assignment{ name: "result", value: Binary{ STAR, 3, 4 } }`
+3. **Evaluate:** `12.0`
+4. **Supervise:** Success on first attempt, trace collected
 
-**Total: 8 tests, all passing, zero memory leaks**
-
----
-
-## Learning Approach (CRITICAL)
-
-### TDD Methodology
-
-**For all new features:**
-
-1. **Test First** — Claude writes a failing test
-2. **Implement** — You write code to make it pass
-3. **Review** — Discuss quality, edge cases, design
-4. **Refactor** — Improve together
-5. **Repeat** — Next test, next behavior
-
-### Why TDD?
-
-- **Forces design thinking** — Define behavior before implementation
-- **Proves correctness** — Not just "it compiles" but "it works"
-- **Catches regressions** — Changes don't break existing features
-- **Documents behavior** — Tests show how to use the code
-- **Builds deep understanding** — Can't fake it, must know it
-
-### Working with Claude
-
-**Claude will:**
-- Ask questions until you understand the problem
-- Write tests that define expected behavior
-- Point you to concepts, not just solutions
-- Make you defend your architecture
-- Push back on shortcuts
-- Refuse to write code without your design first
-
-**You will:**
-- Think through problems before coding
-- Write first implementations
-- Debug your own code (with guidance)
-- Defend your design choices
-- Build deep knowledge, not just copy code
-
-### Red Flags (Stop and Reconsider)
-- Copying code without understanding it
-- Can't explain a design decision
-- Taking shortcuts to "just get it done"
-- Skipping the design/thinking phase
-
-**This is slower than receiving code. That's intentional. You're building deep knowledge.**
+**All memory properly managed, zero leaks.**
 
 ---
 
-## Design Decisions Made
+## Key Design Decisions
 
-### 1. **Tree-Walk Interpreter First**
-Not bytecode VM or JIT.
+### 1. Functional vs OO
 
-**Why:**
-- Simpler to implement and understand
-- Good enough for infrastructure code (I/O bound)
-- Easier to instrument and supervise
-- Can add VM later if needed
+**Functional (lexer, parser, evaluator):**
+- ✅ Simple operations (input → output)
+- ✅ No persistent state needed
+- ✅ Easier to test (pure functions)
 
-### 2. **Trace Collection in Evaluator**
-Evaluator owns the trace ArrayList.
+**OO (supervisor):**
+- ✅ Stateful orchestration
+- ✅ Configuration management
+- ✅ Multiple method coordination
 
-**Why:**
-- Simple for MVP
-- Configurable (can disable)
-- Foundation for supervision
-- Can add callbacks later if needed
-
-### 3. **Tests Inline with Code**
-Not in separate test directories.
+### 2. Arena for Temporary, GPA for Permanent
 
 **Why:**
-- Simpler build configuration
-- Standard Zig practice
-- Avoids module system complexity
-- Tests stay close to implementation
+- Temporary data (tokens, AST) dies together → arena perfect
+- Permanent data (traces, results) lives longer → explicit allocation
+- Clear separation of lifetimes
+- No manual cleanup of temporaries
 
-### 4. **No Shadowing**
-Variables can't be rebound. One name = one value.
-
-**Why:** Clarity. No confusion about which `x` you're referring to.
-
-### 5. **Match Only (No If/Else)**
-All branching through `match` expressions.
-
-**Why:** Forces exhaustive handling. No "forgot the else branch" bugs.
-
-### 6. **Pipes for Lambda Args**
-Use `|x|` for lambda parameters.
-
-**Why:** More explicit than bare identifiers. Rust proved the pattern works.
-
-### 7. **Unified `number` Type**
-All numbers are `f64` (for prototype).
-
-**Why:** Simpler to implement. Can add int/float distinction later.
-
-### 8. **Supervision Default: Trace ON**
-Tracing enabled by default.
-
-**Why:**
-- Infrastructure code needs observability
-- Easy to disable for performance-critical scripts
-- Aligns with "safe by default" philosophy
-
-### 9. **Memory Tracking via Allocator**
-Use tracking allocator, not OS queries.
-
-**Why:**
-- Pure Zig, no syscalls
-- Cross-platform
-- Fast (atomic counters)
-- Good enough for MVP (tracks heap allocations)
-
-### 10. **Assignment as Statement (Not Expression)**
-Assignments cannot be chained or used in expressions.
-
-**Why:**
-- Explicit > Clever (core philosophy)
-- Prevents common bugs (`if (x = y)` typo in C)
-- Matches modern language trend (Go, Rust, Swift)
-- More readable (`x := 10; y := 20` vs `x := y := 10`)
-
-**Trade-off:** Can't write `x := y := 10`, but that's rarely needed anyway.
-
-### 11. **Caller Provides Allocator Pattern**
-All components accept an `Allocator` parameter from the caller.
-
-**Why:**
-- Caller controls memory strategy (GPA, arena, pool, etc.)
-- Clear ownership (who allocated = who frees)
-- Testable (can use `testing.allocator` to detect leaks)
-- Standard Zig idiom
+### 3. Trace Ownership
 
 **Pattern:**
 ```zig
-var supervisor = Supervisor{ .allocator = my_allocator, .config = config };
-var result = try supervisor.run(source);
-defer result.deinit();  // Caller frees
+// Evaluator allocates trace in arena
+var eval_result = try evaluate(program, arena.allocator(), config);
+defer eval_result.deinit();  // Frees trace in arena
+
+// Supervisor copies to permanent memory
+const trace_copy = try self.allocator.alloc(TraceEntry, eval_result.trace.len);
+@memcpy(trace_copy, eval_result.trace);
 ```
 
-### 12. **Guard Clause Style**
-Prefer early returns over nested conditions.
+**Caller owns returned memory, must free it.**
+
+### 4. Program/Expr Keep deinit Methods
 
 **Why:**
-- Reduces nesting depth
-- Makes happy path obvious (at the end)
-- Easier to reason about control flow
+- Flexibility for non-arena usage (REPL, caching, hot-reload)
+- Calling `deinit()` with arena is harmless (no-op)
+- Future-proof for features we haven't designed yet
+- User experience > implementation simplicity
 
-**Example:**
+**Pattern:**
 ```zig
-// Guard: Success - return immediately
-if (result.status == .success) {
-    return SupervisionResult{ ... };
-}
+var arena = ArenaAllocator.init(allocator);
+defer arena.deinit();
 
-// Guard: Parse error - don't retry
-if (result.status == .parse_error) {
-    return SupervisionResult{ ... };
-}
-
-// Implicit: eval_error - retry logic continues
-result.deinit(allocator);
+var program = try parse(tokens, arena.allocator());
+defer program.deinit();  // Harmless with arena, required without
 ```
 
 ---
 
-## Lessons Learned
+## Testing Pattern (Standardized)
 
-1. **Don't speculate** — Only implement what's tested
-2. **Design before code** — Understand the problem deeply
-3. **Recursive descent is elegant** — Each level: call down, check, build up
-4. **Indentation is manageable** — Stack-based tracking works
-5. **Type vs Literal separation** — Keep parse-time and runtime distinct
-6. **Tree-walk is sufficient** — Don't optimize prematurely
-7. **TDD teaches deeply** — Writing tests first forces understanding
-8. **Zig 0.15 has breaking changes** — Always check current docs
-9. **Build system complexity** — Keep it simple until necessary
-10. **Tests inline work best** — Separate test dirs are optional complexity
-11. **TDD builds confidence** — Every feature proven correct by tests
-12. **Unit vs Integration tests** — Integration tests for component interaction, unit tests for complex logic
-13. **Memory ownership patterns** — Arena for temps, parent allocator for permanent data
-14. **Off-by-one errors** — Start loop counters at values that make sense (attempts at 1, not 0)
-15. **Init/deinit symmetry** — If `init()` allocates, `deinit()` must free
-16. **Trace ownership transfer** — Caller owns returned memory, must free it
-17. **Parse vs eval errors** — Parse errors are permanent (don't retry), eval errors might be transient
-18. **Debug output pollution** — Remove `stderr` prints from library code, handle at caller level
+```zig
+test "feature name" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();  // Only cleanup needed
 
----
+    const tokens = try tokenize(source, arena.allocator());
+    var program = try parse(tokens, arena.allocator());
+    defer program.deinit();  // Explicit, even though arena handles it
 
-## Zig 0.15.1 Specific Notes
+    var result = try evaluate(program, arena.allocator(), .{});
+    defer result.deinit();
 
-**API Changes from Earlier Versions:**
-- `ArrayList.append()` now takes allocator as parameter
-- `ArrayList.init()` deprecated, use `initCapacity()`
-- Module system more explicit in `build.zig`
-- Imports: use `.zig` extension for relative file imports
-- `std.testing` accessed through `std`, not direct import
+    try testing.expectEqual(expected, result.value);
+}
+```
 
-**When continuing:**
-- Check current Zig docs for API changes
-- Use ChatGPT for syntax questions (has 0.15 knowledge)
-- Use Claude for concepts and architecture
+**All tests passing, zero memory leaks.**
 
 ---
 
-## Immediate Next Session
+## What's Next
 
-### Start With
-"I'm continuing the Ripple language project. I have:
-- ✅ Working lexer
-- ✅ Working parser (for assignments)
-- ✅ Working evaluator (for assignments, with trace collection)
-- ✅ Working supervisor (with retry logic, tested)
-- ✅ Test framework proven effective (inline tests, TDD)
+### Immediate: Add More Binary Operators
 
-I want to add [NEXT FEATURE] using TDD. One test at a time. Make me think and learn."
+**Current:** `*`, `/` (multiplication, division)
+**Next:** `+`, `-` (addition, subtraction)
 
-### Possible Next Features
-- **Binary operators** (`+`, `-`, `*`, `/`, `==`, `!=`)
-- **Pipeline operator** (`|>`)
-- **Lambda expressions** (`|x| -> x * 2`)
-- **Match expressions** (pattern matching)
-- **Function calls** (`process(data, config)`)
-- **Timeout support** (thread-based execution limits)
+**Parser needs:**
+```zig
+fn parseAdditive(state: *ParseState, allocator: Allocator) !Expr {
+    var left = try parseMultiplicative(state, allocator);
 
-### Paste
-- This handoff doc
-- Any specific questions about the feature
+    while (state.peek().type == .PLUS or state.peek().type == .MINUS) {
+        const op = state.consume();
+        const right = try parseMultiplicative(state, allocator);
+        // Build binary node
+    }
 
-### Explicitly State
-"Use TDD: You write ONE test, I implement it, we review, repeat. Ask me questions. Make me understand before coding."
+    return left;
+}
+```
+
+**Then update precedence chain:**
+```
+parseAssignment()
+  → parseAdditive()        ← NEW
+    → parseMultiplicative()
+      → parsePrimary()
+```
+
+### Future Features (In Order)
+
+1. **Addition/Subtraction** (`+`, `-`)
+2. **Comparison operators** (`==`, `!=`, `<`, `>`, `<=`, `>=`)
+3. **Function calls** (`process(data, config)`)
+4. **Lambda expressions** (`|x| -> x * 2`)
+5. **Pipeline operator** (`|>`)
+6. **Match expressions** (pattern matching)
 
 ---
 
-## Current Implementation Quality: 9/10
+## Lessons from Refactoring Session
+
+### What Went Well
+1. ✅ Functional style is cleaner for pure operations
+2. ✅ Arena pattern simplifies memory management dramatically
+3. ✅ All tests still pass after major refactor
+4. ✅ Zero memory leaks maintained throughout
+
+### What Was Confusing
+1. ❌ When to use arena vs manual allocation (now clear)
+2. ❌ Ownership of traces and results (now documented)
+3. ❌ Whether to keep deinit methods (decided: keep for flexibility)
+4. ❌ OO vs functional tradeoffs (now understood)
+
+### Key Insight
+**"The runtime is a binary, not a library" doesn't mean "only one allocation strategy."**
+
+Even internal code benefits from flexibility. Keep `deinit()` methods for:
+- Future features (REPL, caching, hot-reload)
+- Explicit ownership (clear who frees what)
+- Harmless with arena (calling deinit is a no-op)
+
+---
+
+## File Status
+
+### Clean and Working
+- ✅ `lexer.zig` - Functional, 4 tests passing
+- ✅ `parser.zig` - Functional, 1 test passing
+- ✅ `evaluator.zig` - Functional, 5 tests passing
+- ✅ `supervisor.zig` - OO, 6 tests passing
+- ✅ `ast.zig` - Data structures with deinit methods
+
+### Unchanged
+- ✅ `token.zig` - Token definitions
+- ✅ `error.zig` - Error reporting
+- ✅ `build.zig` - Build configuration
+
+### Total: 16 tests passing, 0 memory leaks
+
+---
+
+## Quick Reference: Running Tests
+
+```bash
+# All tests
+zig build test
+
+# Individual files
+zig test src/lexer.zig
+zig test src/parser.zig
+zig test src/evaluator.zig
+zig test src/supervisor.zig
+```
+
+---
+
+## Next Session Starter
+
+**"I'm continuing Ripple. After refactoring to functional style:**
+- ✅ Lexer, parser, evaluator are functional
+- ✅ Supervisor uses arena per execution
+- ✅ Binary operators `*` and `/` work
+- ✅ 16 tests passing, zero leaks
+
+**I want to add `+` and `-` operators using TDD. Write ONE test for addition, I'll implement it, we review, repeat."**
+
+---
+
+## Architecture Summary
+
+```
+User Code
+  ↓
+Supervisor (OO, stateful)
+  ↓ per execution
+Arena (temporary allocations)
+  ├─ tokenize() → []Token
+  ├─ parse() → Program
+  └─ evaluate() → EvaluationResult
+       ↓ copy trace
+Permanent Memory (GPA)
+  └─ SupervisionResult (traces, values)
+```
+
+**Simple. Clean. Working.**
+
+---
+
+## Language Features (Current)
+
+### Working Now
+```ripple
+x := 10                    # Inferred assignment
+name: string = "alice"     # Explicit type
+result := 3 * 4            # Multiplication
+quotient := 10 / 2         # Division
+y := x                     # Identifier lookup
+```
+
+### Coming Soon
+```ripple
+sum := 2 + 3               # Addition
+diff := 10 - 5             # Subtraction
+equal := x == y            # Comparison
+double := |x| -> x * 2     # Lambda
+result := data |> process  # Pipeline
+```
+
+---
+
+**Current Quality: 8.5/10**
 
 **What's good:**
-- ✅ Clean, understandable code
-- ✅ Proper error handling with retry logic
-- ✅ Configurable runtime
-- ✅ Comprehensive test framework (unit + integration)
-- ✅ Good separation of concerns
-- ✅ No memory leaks
-- ✅ Production-ready Supervisor (MVP)
-- ✅ TDD methodology working well
+- ✅ Functional architecture matches language philosophy
+- ✅ Arena pattern simplifies memory management
+- ✅ All tests passing, no leaks
+- ✅ Binary operators work (multiplication, division)
+- ✅ Clean separation: temporary vs permanent memory
 
-**What could improve:**
-- More expression types (operators, calls, match)
-- Better error messages (source locations in errors)
-- Timeout implementation (requires threads)
-- Memory tracking (via GPA wrapper)
-- Documentation comments in code
+**What's next:**
+- Add more operators (`+`, `-`, comparisons)
+- Then functions, lambdas, pipelines, match
+- Type checker
+- Better error messages with source locations
 
----
-
-## The Real Goal
-
-**Build a language for infrastructure code that's safer, clearer, and more reliable than current alternatives.**
-
-Success metrics:
-- DevOps engineers can read and understand code immediately
-- Explicit error handling prevents silent failures
-- Supervision catches and recovers from failures automatically
-- Effect tags make side effects visible
-- Integration with logging/monitoring is seamless
-
-Even if only a few teams use it, that's a win. The goal is to prove the concept and learn deeply.
-
----
-
-## Refactoring TODOs
-
-### Parser Cleanup
-- Consider removing `Parser.init()` if it's just field assignment
-- OR keep init/deinit if ArrayList field makes sense
-- Decision: Does Parser need stateful accumulation, or can parse() be self-contained?
-
-### Error Reporting
-- Remove `errors.report()` calls from parser (debug noise)
-- Handle error printing at CLI/REPL level (not in library code)
-
-### Memory Tracking
-- Add GPA wrapper for actual memory measurement (currently returns 0)
-
-### Timeout Implementation
-- Thread-based timeout for `timeout_ms` config
-- Kill thread if execution exceeds limit
-
----
-
-directive for cluade: "Use TDD: You write ONE test, I implement it, we review, repeat. Ask me questions. Make me understand before coding."
-
-**You've built a solid foundation. The interpreter works. The supervisor works. Now add features.**
-
-**Remember: TDD from here on. Test first, implement second, understand always.**
+**The foundation is solid. Time to build features.**

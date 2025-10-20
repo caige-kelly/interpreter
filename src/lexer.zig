@@ -5,347 +5,379 @@ const TokenType = @import("token.zig").TokenType;
 const Literal = @import("ast.zig").Literal;
 const KeywordMap = @import("token.zig").KeywordMap;
 
-const initial_token_capacity = 4096;
-
-pub const Lexer = struct {
+// Pure data - parsing state
+const LexState = struct {
     source: []const u8,
-    tokens: std.ArrayList(Token),
-    allocator: std.mem.Allocator,
-
     start: usize = 0,
     current: usize = 0,
     line: usize = 1,
     column: usize = 0,
     start_column: usize = 0,
-
-    // Indentation tracking
-    indent_stack: std.ArrayList(usize) = undefined,
-    pending_dedents: usize = 0,
     at_line_start: bool = true,
 
-    pub fn init(source: []const u8, allocator: std.mem.Allocator) !Lexer {
-        var stack = try std.ArrayList(usize).initCapacity(allocator, 0);
-        try stack.append(allocator, 0);
-
-        return .{
-            .source = source,
-            .tokens = try std.ArrayList(Token).initCapacity(allocator, 0),
-            .allocator = allocator,
-            .indent_stack = stack,
-        };
+    fn peek(self: *const LexState) u8 {
+        if (self.isAtEnd()) return 0;
+        return self.source[self.current];
     }
 
-    pub fn deinit(self: *Lexer) void {
-        self.indent_stack.deinit(self.allocator);
+    fn peekNext(self: *const LexState) u8 {
+        if (self.current + 1 >= self.source.len) return 0;
+        return self.source[self.current + 1];
     }
 
-    pub fn scanTokens(self: *Lexer) ![]Token {
-        while (!self.isAtEnd()) {
-            if (self.at_line_start and !self.isAtEnd()) {
-                try self.handleIndentation();
-                self.at_line_start = false;
-            }
-
-            if (self.isAtEnd()) break;
-
-            // Reset start position for next token
-            self.start = self.current;
-            self.start_column = self.column;
-
-            _ = try self.scanToken();
-        }
-
-        // Add EOF token
-        self.start = self.current;
-        self.start_column = self.column;
-        try self.makeToken(.EOF, .none);
-
-        return self.tokens.items;
+    fn isAtEnd(self: *const LexState) bool {
+        return self.current >= self.source.len;
     }
 
-    fn handleIndentation(self: *Lexer) !void {
-        var indent: usize = 0;
-
-        // Count leading whitespace (spaces only, not tabs for simplicity)
-        while (!self.isAtEnd() and (self.peek() == ' ' or self.peek() == '\t')) {
-            if (self.peek() == ' ') {
-                indent += 1;
-            } else {
-                indent += 4; // Tab = 4 spaces
-            }
-            _ = self.advance();
-        }
-
-        // Skip blank lines and comments
-        if (self.isAtEnd() or self.peek() == '\n' or self.peek() == '/') {
-            while (!self.isAtEnd() and self.peek() != '\n') {
-                _ = self.advance();
-            }
-            return;
-        }
-
-        const current_indent = self.indent_stack.items[self.indent_stack.items.len - 1];
-
-        if (indent > current_indent) {
-            // Indent increased
-            try self.indent_stack.append(self.allocator, indent);
-            self.tokens.append(self.allocator, .{
-                .type = .INDENT,
-                .lexeme = "",
-                .line = self.line,
-                .column = self.column,
-            }) catch unreachable;
-        } else if (indent < current_indent) {
-            // Dedent: may need multiple DEDENT tokens
-            while (self.indent_stack.items.len > 1 and self.indent_stack.items[self.indent_stack.items.len - 1] > indent) {
-                _ = self.indent_stack.pop();
-                self.tokens.append(self.allocator, .{
-                    .type = .DEDENT,
-                    .lexeme = "",
-                    .line = self.line,
-                    .column = self.column,
-                }) catch unreachable;
-            }
-        }
-    }
-
-    pub fn scanToken(self: *Lexer) !void {
-        const c = self.advance();
-
-        switch (c) {
-            '(' => return self.makeToken(.LEFT_PAREN, .none),
-            ')' => return self.makeToken(.RIGHT_PAREN, .none),
-            '{' => return self.makeToken(.LEFT_BRACE, .none),
-            '}' => return self.makeToken(.RIGHT_BRACE, .none),
-            '[' => return self.makeToken(.LEFT_BRACKET, .none),
-            ']' => return self.makeToken(.RIGHT_BRACKET, .none),
-            ',' => return self.makeToken(.COMMA, .none),
-            '.' => return self.makeToken(.DOT, .none),
-            ':' => return if (self.match('=')) self.makeToken(.COLON_EQUAL, .none) else self.makeToken(.COLON, .none),
-            '+' => return self.makeToken(.PLUS, .none),
-            '-' => {
-                if (self.match('>')) return self.makeToken(.ARROW, .none);
-                return self.makeToken(.MINUS, .none);
-            },
-            '*' => return self.makeToken(.STAR, .none),
-            '@' => return self.makeToken(.AT, .none),
-            '#' => return self.makeToken(.HASH, .none),
-            '^' => return self.makeToken(.CARET, .none),
-            '|' => return if (self.match('>')) self.makeToken(.PIPE, .none) else self.undefinedLexeme(),
-            '"' => {
-                const processed = self.stringLiteral();
-                return self.makeToken(.STRING, .{ .string = try processed });
-            },
-            '_' => return self.makeToken(.UNDERSCORE, .none),
-            '/' => return if (self.match('/')) self.commentLexeme() else self.makeToken(.SLASH, .none),
-            '!' => return if (self.match('=')) self.makeToken(.BANG_EQUAL, .none) else self.makeToken(.BANG, .none),
-            '=' => return if (self.match('=')) self.makeToken(.EQUAL_EQUAL, .none) else self.makeToken(.EQUAL, .none),
-            '<' => return if (self.match('=')) self.makeToken(.LESS_EQUAL, .none) else self.makeToken(.LESS, .none),
-            '>' => return if (self.match('=')) self.makeToken(.GREATER_EQUAL, .none) else self.makeToken(.GREATER, .none),
-            ' ' => return,
-            '\r' => return,
-            '\t' => return,
-            '\n' => return try self.newLine(),
-            else => if (isNumber(c)) {
-                const literal = try self.scanNumber();
-                return self.makeToken(.NUMBER, literal);
-            } else if (isAlpha(c)) {
-                return self.makeToken(self.identifier(), .none);
-            } else return self.undefinedLexeme(),
-        }
-    }
-
-    fn newLine(self: *Lexer) !void {
-        self.column = 0;
-        self.line += 1;
-        try self.makeToken(.NEWLINE, .none);
-        return;
-    }
-
-    fn undefinedLexeme(self: *Lexer) !void {
-        errors.report(self.line, "", "Unexpected character.");
-        return error.UnexpectedCharacter;
-    }
-
-    fn commentLexeme(self: *Lexer) void {
-        while (!self.isAtEnd() and self.peek() != '\n') {
-            _ = self.advance();
-        }
-    }
-
-    fn identifier(self: *Lexer) TokenType {
-        while (isAlpha(self.peek()) or isNumber(self.peek())) {
-            _ = self.advance();
-        }
-
-        const word = self.source[self.start..self.current];
-        return KeywordMap.get(word) orelse .IDENTIFIER;
-    }
-
-    fn scanIdentifier(self: *Lexer) void {
-        const start = self.pos;
-        const start_col = self.column;
-
-        while (!self.isAtEnd() and self.isAlphaNumeric(self.peek())) {
-            self.advance();
-        }
-
-        const lexeme = self.source[start..self.pos];
-
-        // Check for boolean literals
-        if (std.mem.eql(u8, lexeme, "true")) {
-            self.tokens.append(.{
-                .type = .BOOLEAN,
-                .lexeme = lexeme,
-                .line = self.line,
-                .column = start_col,
-                .literal = .{ .boolean = true },
-            }) catch unreachable;
-            return;
-        }
-        if (std.mem.eql(u8, lexeme, "false")) {
-            self.tokens.append(.{
-                .type = .BOOLEAN,
-                .lexeme = lexeme,
-                .line = self.line,
-                .column = start_col,
-                .literal = .{ .boolean = false },
-            }) catch unreachable;
-            return;
-        }
-
-        // Otherwise it's a keyword or identifier
-        const token_type = self.getKeywordType(lexeme);
-
-        self.tokens.append(.{
-            .type = token_type,
-            .lexeme = lexeme,
-            .line = self.line,
-            .column = start_col,
-        }) catch unreachable;
-    }
-
-    fn isAlpha(token: u8) bool {
-        return std.ascii.isAlphabetic(token) or token == '_';
-    }
-
-    fn isNumber(token: u8) bool {
-        return std.ascii.isDigit(token);
-    }
-
-    fn scanNumber(self: *Lexer) !Literal {
-        while (!self.isAtEnd() and isNumber(self.peek())) {
-            _ = self.advance();
-        }
-
-        if (!self.isAtEnd() and self.peek() == '.' and isNumber(self.peekNext())) {
-            _ = self.advance();
-            while (!self.isAtEnd() and isNumber(self.peek())) {
-                _ = self.advance();
-            }
-        }
-
-        const lexeme = self.source[self.start..self.current];
-
-        // Parse as float
-        const float_val = try std.fmt.parseFloat(f64, lexeme);
-        return .{ .number = float_val };
-    }
-
-    fn stringLiteral(self: *Lexer) ![]u8 {
-        var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
-
-        var prev: u8 = 0;
-
-        while (!self.isAtEnd()) {
-            const ch = self.advance();
-
-            // stop only on an unescaped quote
-            if (ch == '"' and prev != '\\') {
-                // found a closing quote, string is complete
-                const out = try buffer.toOwnedSlice(self.allocator);
-                return out;
-            }
-
-            if (ch == '\\') {
-                if (self.isAtEnd()) break; // broken escape at EOF
-                const next = self.advance();
-                const escaped = switch (next) {
-                    'n' => '\n',
-                    't' => '\t',
-                    'r' => '\r',
-                    '\\' => '\\',
-                    '"' => '"',
-                    else => next, // unknown escapes pass through
-                };
-                try buffer.append(self.allocator, escaped);
-                prev = next;
-            } else {
-                try buffer.append(self.allocator, ch);
-                prev = ch;
-            }
-
-            if (ch == '\n') self.line += 1;
-        }
-
-        // If we reach here, EOF was hit before a closing quote
-        errors.report(self.line, "", "Unterminated string literal (missing closing quote).");
-        _ = buffer.deinit(self.allocator);
-        return error.UnterminatedString;
-    }
-
-    fn advance(self: *Lexer) u8 {
+    fn advance(self: *LexState) u8 {
         const ch = self.source[self.current];
         self.current += 1;
         self.column += 1;
         return ch;
     }
 
-    fn peek(self: *Lexer) u8 {
-        if (self.isAtEnd()) return 0;
-        return self.source[self.current];
-    }
-
-    fn peekNext(self: *Lexer) u8 {
-        if (self.current + 1 >= self.source.len) return 0;
-        return self.source[self.current + 1];
-    }
-
-    fn isAtEnd(self: *Lexer) bool {
-        return self.current >= self.source.len;
-    }
-
-    fn match(self: *Lexer, expected: u8) bool {
+    fn match(self: *LexState, expected: u8) bool {
         if (self.isAtEnd()) return false;
         if (self.source[self.current] != expected) return false;
-
         self.current += 1;
         self.column += 1;
         return true;
     }
+};
 
-    fn makeToken(self: *Lexer, t: TokenType, literal: Literal) !void {
-        var lit = literal;
-        switch (t) {
-            .NONE => lit = .{ .none = {} }, // empty struct for void
-            else => {},
+// Main entry point - free function
+pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
+    var state = LexState{ .source = source };
+    var tokens = try std.ArrayList(Token).initCapacity(allocator, 0);
+    var indent_stack = try std.ArrayList(usize).initCapacity(allocator, 0);
+    defer indent_stack.deinit(allocator);
+
+    try indent_stack.append(allocator, 0);
+
+    while (!state.isAtEnd()) {
+        if (state.at_line_start and !state.isAtEnd()) {
+            try handleIndentation(&state, &tokens, &indent_stack, allocator);
+            state.at_line_start = false;
         }
 
-        const no_lexeme_tokens = [_]TokenType{ .NEWLINE, .EOF, .INDENT, .DEDENT };
+        if (state.isAtEnd()) break;
 
-        const lexeme = if (std.mem.indexOfScalar(TokenType, &no_lexeme_tokens, t) != null)
-            ""
-        else
-            self.source[self.start..self.current];
+        state.start = state.current;
+        state.start_column = state.column;
 
-        const token = Token{
-            .type = t,
-            .lexeme = lexeme,
-            .literal = lit,
-            .line = self.line,
-            .column = self.start_column,
-        };
-
-        try self.tokens.append(self.allocator, token);
+        try scanToken(&state, &tokens, allocator);
     }
-};
+
+    // Add EOF token
+    state.start = state.current;
+    state.start_column = state.column;
+    try makeToken(&state, &tokens, allocator, .EOF, .none);
+
+    return tokens.toOwnedSlice(allocator);
+}
+
+fn handleIndentation(
+    state: *LexState,
+    tokens: *std.ArrayList(Token),
+    indent_stack: *std.ArrayList(usize),
+    allocator: std.mem.Allocator,
+) !void {
+    var indent: usize = 0;
+
+    while (!state.isAtEnd() and (state.peek() == ' ' or state.peek() == '\t')) {
+        if (state.peek() == ' ') {
+            indent += 1;
+        } else {
+            indent += 4;
+        }
+        _ = state.advance();
+    }
+
+    if (state.isAtEnd() or state.peek() == '\n' or state.peek() == '/') {
+        while (!state.isAtEnd() and state.peek() != '\n') {
+            _ = state.advance();
+        }
+        return;
+    }
+
+    const current_indent = indent_stack.items[indent_stack.items.len - 1];
+
+    if (indent > current_indent) {
+        try indent_stack.append(allocator, indent);
+        try tokens.append(allocator, .{
+            .type = .INDENT,
+            .lexeme = "",
+            .line = state.line,
+            .column = state.column,
+            .literal = null,
+        });
+    } else if (indent < current_indent) {
+        while (indent_stack.items.len > 1 and indent_stack.items[indent_stack.items.len - 1] > indent) {
+            _ = indent_stack.pop();
+            try tokens.append(allocator, .{
+                .type = .DEDENT,
+                .lexeme = "",
+                .line = state.line,
+                .column = state.column,
+                .literal = null,
+            });
+        }
+    }
+}
+
+fn scanToken(
+    state: *LexState,
+    tokens: *std.ArrayList(Token),
+    allocator: std.mem.Allocator,
+) !void {
+    const c = state.advance();
+
+    switch (c) {
+        '(' => return makeToken(state, tokens, allocator, .LEFT_PAREN, .none),
+        ')' => return makeToken(state, tokens, allocator, .RIGHT_PAREN, .none),
+        '{' => return makeToken(state, tokens, allocator, .LEFT_BRACE, .none),
+        '}' => return makeToken(state, tokens, allocator, .RIGHT_BRACE, .none),
+        '[' => return makeToken(state, tokens, allocator, .LEFT_BRACKET, .none),
+        ']' => return makeToken(state, tokens, allocator, .RIGHT_BRACKET, .none),
+        ',' => return makeToken(state, tokens, allocator, .COMMA, .none),
+        '.' => return makeToken(state, tokens, allocator, .DOT, .none),
+        ':' => return if (state.match('='))
+            makeToken(state, tokens, allocator, .COLON_EQUAL, .none)
+        else
+            makeToken(state, tokens, allocator, .COLON, .none),
+        '+' => return makeToken(state, tokens, allocator, .PLUS, .none),
+        '-' => {
+            if (state.match('>')) return makeToken(state, tokens, allocator, .ARROW, .none);
+            return makeToken(state, tokens, allocator, .MINUS, .none);
+        },
+        '*' => return makeToken(state, tokens, allocator, .STAR, .none),
+        '@' => return makeToken(state, tokens, allocator, .AT, .none),
+        '#' => return makeToken(state, tokens, allocator, .HASH, .none),
+        '^' => return makeToken(state, tokens, allocator, .CARET, .none),
+        '|' => return if (state.match('>'))
+            makeToken(state, tokens, allocator, .PIPE, .none)
+        else
+            undefinedLexeme(state),
+        '"' => {
+            const str = try stringLiteral(state, allocator);
+            return makeToken(state, tokens, allocator, .STRING, .{ .string = str });
+        },
+        '_' => return makeToken(state, tokens, allocator, .UNDERSCORE, .none),
+        '/' => return if (state.match('/'))
+            commentLexeme(state)
+        else
+            makeToken(state, tokens, allocator, .SLASH, .none),
+        '!' => return if (state.match('='))
+            makeToken(state, tokens, allocator, .BANG_EQUAL, .none)
+        else
+            makeToken(state, tokens, allocator, .BANG, .none),
+        '=' => return if (state.match('='))
+            makeToken(state, tokens, allocator, .EQUAL_EQUAL, .none)
+        else
+            makeToken(state, tokens, allocator, .EQUAL, .none),
+        '<' => return if (state.match('='))
+            makeToken(state, tokens, allocator, .LESS_EQUAL, .none)
+        else
+            makeToken(state, tokens, allocator, .LESS, .none),
+        '>' => return if (state.match('='))
+            makeToken(state, tokens, allocator, .GREATER_EQUAL, .none)
+        else
+            makeToken(state, tokens, allocator, .GREATER, .none),
+        ' ', '\r', '\t' => return,
+        '\n' => return newLine(state, tokens, allocator),
+        else => if (isNumber(c)) {
+            const literal = try scanNumber(state);
+            return makeToken(state, tokens, allocator, .NUMBER, literal);
+        } else if (isAlpha(c)) {
+            const token_type = identifier(state);
+            return makeToken(state, tokens, allocator, token_type, .none);
+        } else {
+            return undefinedLexeme(state);
+        },
+    }
+}
+
+fn newLine(state: *LexState, tokens: *std.ArrayList(Token), allocator: std.mem.Allocator) !void {
+    state.column = 0;
+    state.line += 1;
+    state.at_line_start = true;
+    try makeToken(state, tokens, allocator, .NEWLINE, .none);
+}
+
+fn undefinedLexeme(state: *LexState) !void {
+    errors.report(state.line, "", "Unexpected character.");
+    return error.UnexpectedCharacter;
+}
+
+fn commentLexeme(state: *LexState) void {
+    while (!state.isAtEnd() and state.peek() != '\n') {
+        _ = state.advance();
+    }
+}
+
+fn identifier(state: *LexState) TokenType {
+    while (isAlpha(state.peek()) or isNumber(state.peek())) {
+        _ = state.advance();
+    }
+
+    const word = state.source[state.start..state.current];
+    return KeywordMap.get(word) orelse .IDENTIFIER;
+}
+
+fn isAlpha(token: u8) bool {
+    return std.ascii.isAlphabetic(token) or token == '_';
+}
+
+fn isNumber(token: u8) bool {
+    return std.ascii.isDigit(token);
+}
+
+fn scanNumber(state: *LexState) !Literal {
+    while (!state.isAtEnd() and isNumber(state.peek())) {
+        _ = state.advance();
+    }
+
+    if (!state.isAtEnd() and state.peek() == '.' and isNumber(state.peekNext())) {
+        _ = state.advance();
+        while (!state.isAtEnd() and isNumber(state.peek())) {
+            _ = state.advance();
+        }
+    }
+
+    const lexeme = state.source[state.start..state.current];
+    const float_val = try std.fmt.parseFloat(f64, lexeme);
+    return .{ .number = float_val };
+}
+
+fn stringLiteral(state: *LexState, allocator: std.mem.Allocator) ![]u8 {
+    var buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var prev: u8 = 0;
+
+    while (!state.isAtEnd()) {
+        const ch = state.advance();
+
+        if (ch == '"' and prev != '\\') {
+            return buffer.toOwnedSlice(allocator);
+        }
+
+        if (ch == '\\') {
+            if (state.isAtEnd()) break;
+            const next = state.advance();
+            const escaped = switch (next) {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '"' => '"',
+                else => next,
+            };
+            try buffer.append(allocator, escaped);
+            prev = next;
+        } else {
+            try buffer.append(allocator, ch);
+            prev = ch;
+        }
+
+        if (ch == '\n') state.line += 1;
+    }
+
+    errors.report(state.line, "", "Unterminated string literal (missing closing quote).");
+    buffer.deinit(allocator);
+    return error.UnterminatedString;
+}
+
+fn makeToken(
+    state: *LexState,
+    tokens: *std.ArrayList(Token),
+    allocator: std.mem.Allocator,
+    t: TokenType,
+    literal: Literal,
+) !void {
+    var lit = literal;
+    switch (t) {
+        .NONE => lit = .{ .none = {} },
+        else => {},
+    }
+
+    const no_lexeme_tokens = [_]TokenType{ .NEWLINE, .EOF, .INDENT, .DEDENT };
+
+    const lexeme = if (std.mem.indexOfScalar(TokenType, &no_lexeme_tokens, t) != null)
+        ""
+    else
+        state.source[state.start..state.current];
+
+    const token = Token{
+        .type = t,
+        .lexeme = lexeme,
+        .literal = lit,
+        .line = state.line,
+        .column = state.start_column,
+    };
+
+    try tokens.append(allocator, token);
+}
+
+// Tests
+const testing = std.testing;
+
+test "tokenize simple number" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "42";
+    const tokens = try tokenize(source, arena.allocator());
+
+    try testing.expectEqual(@as(usize, 2), tokens.len);
+    try testing.expectEqual(TokenType.NUMBER, tokens[0].type);
+    try testing.expectEqual(@as(f64, 42.0), tokens[0].literal.?.number);
+    try testing.expectEqual(TokenType.EOF, tokens[1].type);
+}
+
+test "tokenize assignment" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "x := 10";
+    const tokens = try tokenize(source, arena.allocator());
+
+    try testing.expectEqual(@as(usize, 4), tokens.len);
+    try testing.expectEqual(TokenType.IDENTIFIER, tokens[0].type);
+    try testing.expectEqualStrings("x", tokens[0].lexeme);
+    try testing.expectEqual(TokenType.COLON_EQUAL, tokens[1].type);
+    try testing.expectEqual(TokenType.NUMBER, tokens[2].type);
+    try testing.expectEqual(@as(f64, 10.0), tokens[2].literal.?.number);
+    try testing.expectEqual(TokenType.EOF, tokens[3].type);
+}
+
+test "tokenize multiplication" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "3 * 4";
+    const tokens = try tokenize(source, arena.allocator());
+
+    try testing.expectEqual(@as(usize, 4), tokens.len);
+    try testing.expectEqual(TokenType.NUMBER, tokens[0].type);
+    try testing.expectEqual(@as(f64, 3.0), tokens[0].literal.?.number);
+    try testing.expectEqual(TokenType.STAR, tokens[1].type);
+    try testing.expectEqual(TokenType.NUMBER, tokens[2].type);
+    try testing.expectEqual(@as(f64, 4.0), tokens[2].literal.?.number);
+    try testing.expectEqual(TokenType.EOF, tokens[3].type);
+}
+
+test "tokenize string literal" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = "\"hello world\"";
+    const tokens = try tokenize(source, arena.allocator());
+
+    try testing.expectEqual(@as(usize, 2), tokens.len);
+    try testing.expectEqual(TokenType.STRING, tokens[0].type);
+    try testing.expectEqualStrings("hello world", tokens[0].literal.?.string);
+    try testing.expectEqual(TokenType.EOF, tokens[1].type);
+}
