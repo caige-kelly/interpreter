@@ -362,12 +362,12 @@ results |> List.partition |> match p ->
 ### Health Check with Retry
 
 ```ripple
-#System.schedule = "*/5 * * * *"  // Every 5 minutes
-#System.trace_to = "datadog://api-key"
-#Process.timeout = 30000
+!System.schedule = "*/5 * * * *"  // Every 5 minutes
+!System.trace_to = "datadog://api-key"
+!Process.timeout = 30000
 
 check_health := service ->
-  Net.get(service.url, timeout: 5000) |> match ->
+  Net.get service.url |> match ->
     ok(resp, _) resp.status == 200 && resp.body.status == "healthy" ->
       ok(service.name)
     ok(_, _) ->
@@ -380,18 +380,16 @@ services := [
   {name: "worker", url: "https://worker.example.com/health"}
 ]
 
-results := services
-  |> List.parallel_map(check_health, max_concurrent: 3)
+results := services.parallel_map(check_health, max_concurrent: 3)
 
-results |> List.partition |> match p ->
-  p p.failure.length == 0 ->
+results |> List.partition [failure, success] |> match p ->
+  p.failure.length == 0 ->
     Metrics.gauge("health.all_up", 1)
   
   p ->
-    p.failure |> List.each(name ->
-      Metrics.gauge("health." + name, 0)
-      Alert.slack("⚠️ " + name + " is unhealthy")
-    )
+    p.failur |> map name ->
+      Metrics.gauge "health.{name}" 0
+      Alert.slack "⚠️ " + name + " is unhealthy"
 ```
 
 ## Use Ripple For
