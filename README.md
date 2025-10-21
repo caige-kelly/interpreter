@@ -59,23 +59,26 @@ def backup():
 
 ```ripple
 // backup.rip - everything in one place
+
+// fail if any of the system configurations return Err
 !System.schedule = "0 3 * * *"
 !System.trace_to = "s3://logs/ripple/"
 !System.on_failure = Alert.pagerduty("Backup failed")
 !Process.timeout = 600000
 
-databases := ["prod", "staging", "dev"]
-s3_url := "s3://backups"
+// Literals - Results, auto-unwrap in safe contexts
+databases := ["prod", "staging", "dev"]    // Result<Ok([...])>
+s3_url := "s3://backups"                   // Result<Ok("s3://backups")>
 
-!Task.retry backup_db {max_retires: 3}
+!Task.retry backup_db {max_retires: 3} //retry backup_db up to 3 times if there is an Err returned
 backup_db := db ->
-  !Process.run "pg_dump " + db
-  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] 
-  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _ 
+  !Process.run "pg_dump " + db // must work
+  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] //try gzip or brotli must work
+  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _  // s3 must work
 
-results := databases.parallel_map backup_db {max_concurrent: 3}
+results := databases.parallel_map backup_db {max_concurrent: 3} // return [Result, Result, Result]
 
-// Partition ok, err Results into successes and failures
+// Partition results by ok, err into successes and failures
 result.partition [success, failure] |> match p ->
   p.failure.length == 0 ->
     IO.stdout("✓ All " + p.success.length + " databases backed up")
@@ -106,14 +109,14 @@ rvm restart backup.rip   # Graceful restart
 **Ripple:** Configure the runtime once, it handles execution
 
 ```ripple
-#System.schedule = "0 3 * * *"           // Built-in cron
-#System.max_memory = "512MB"             // Resource limits
-#System.trace_to = "jaeger://traces"     // Distributed tracing
-#System.on_failure = Alert.slack         // Failure hooks
+System.schedule = "0 3 * * *"           // Built-in cron
+System.max_memory = "512MB"             // Resource limits
+System.trace_to = "jaeger://traces"     // Distributed tracing
+System.on_failure = Alert.slack         // Failure hooks
 
-#Process.timeout = 600000                // Global timeout
-#Process.retries = 3                     // Retry failed operations
-#Process.parallel_limit = 5              // Max concurrency
+Process.timeout = 600000                // Global timeout
+Process.retries = 3                     // Retry failed operations
+Process.parallel_limit = 5              // Max concurrency
 
 // Your script - runtime handles the rest
 do_work()
@@ -138,13 +141,14 @@ except Exception as e:
 **Ripple:** Errors flow inline with your logic
 ```ripple
 // Default: Returns Result, handle explicitly
-result := step1()
-  |> step2
-  |> step3
-  |> match ->
-       ok(v, _) -> v
-       err(msg, meta) ->
-         Log.error("Failed at " + meta.stage + ": " + msg)
+result := ^step1.unwrap_or rollback1 // unwrap Result, on err execute rollback1 and with ^ propogate error up pipeline
+  |> ^step2.unwrap_or rollback2
+  |> ^step3.unwrap_or rollback3
+
+match result {
+  Ok(v) -> process(v)
+  Err(e, meta) -> IO.stdout "encountered error: " + e + "...rolled back" then Sys.exit(1)
+}
 
 // ? = Optional: Errors become none, provide fallback
 config := ?File.read("config.json") or default_config
