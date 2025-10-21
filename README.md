@@ -213,11 +213,10 @@ servers := ["web-1", "web-2", "web-3"]
 results := servers 
   |> List.parallel_map (s -> @deploy s)
 
-results |> List.partition_results |> match ->
-  all_ok(deploys, meta) ->
-    @IO.stdout "✓ Deployed to all servers"
-  partial(succeeded, failed, meta) ->
-    @IO.stdout ("✓ Deployed: " + #String.join succeeded ", ")
+results |> List.partition_results |> match -> // automatic iteration with match
+  ok(deploys, meta) ->
+    @IO.stdout ("✓ Deployed: " + #String.join (deploys|> List.map .server) ", ")
+  err(failed, meta) ->
     @IO.stderr ("✗ Failed: " + #String.join (failed |> List.map .server) ", ")
     @rollback succeeded  // Rollback what succeeded
 ```
@@ -285,6 +284,7 @@ response |> match ->
 result := @Net.post url payload
   |> tap err(msg, _) -> @Slack.post ("Failed: " + msg)
   |> @Map.parse _
+  |> #Result.unwrap_or_none
   or default_response
 ```
 
