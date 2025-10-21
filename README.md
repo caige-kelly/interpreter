@@ -73,7 +73,7 @@ s3_url    := "s3://backups"                                         // Result<Ok
 !Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
 backup_db := db ->
   !process::run "pg_dump " + db                                      // ! = return value or panic
-  |> ?process::run ["gzip", _] or !Process.run ["brotli", _]         // try gzip or brotli must work
+  |> ?process::run ["gzip", _] or !process::run ["brotli", _]         // try gzip or brotli must work
   |> !S3::upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
 
 results := databases.parallel_map backup_db {max_concurrent: 3}     // return [Result, Result, Result]
