@@ -11,11 +11,28 @@ pub const EvalError = error{
     DivisionByZero,
 };
 
+pub const ResultValue = struct {
+    tag: Tag,
+    user: ?*Value, // pointer to another Value
+    sys: ?*Value,
+
+    pub const Tag = enum { ok, err };
+
+    pub fn ok(user: ?*Value, sys: ?*Value) ResultValue {
+        return ResultValue{ .tag = .ok, .user = user, .sys = sys };
+    }
+
+    pub fn err(user: ?*Value, sys: ?*Value) ResultValue {
+        return ResultValue{ .tag = .err, .user = user, .sys = sys };
+    }
+};
+
 pub const Value = union(enum) {
     number: f64,
     string: []const u8,
     boolean: bool,
     none,
+    result: ResultValue,
 };
 
 pub const EvalConfig = struct {
@@ -24,6 +41,7 @@ pub const EvalConfig = struct {
 
 pub const TraceEntry = struct {
     result: Value,
+    task_id: usize = 0,
 };
 
 pub const EvaluationResult = struct {
@@ -86,7 +104,7 @@ fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
         .identifier => |name| evalIdentifier(state, name),
         .assignment => |assign| try evalAssignment(state, assign),
         .binary => |bin| try evalBinary(state, bin),
-        .unary => |un| try evalUnary(state,un),
+        .unary => |un| try evalUnary(state, un),
         //else => error.ExpressionDontExist,
     };
 }
@@ -109,16 +127,16 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
     return switch (bin.operator) {
         // Equality operators - work on any matching types
         .EQUAL_EQUAL, .BANG_EQUAL => evalEquality(left, right, bin.operator),
-        
+
         // Arithmetic operators - type-specific behavior
         .PLUS => evalAddition(state, left, right),
         .MINUS => evalSubtraction(left, right),
         .STAR => evalMultiplication(left, right),
         .SLASH => evalDivision(left, right),
-        
+
         // Comparison operators - numbers only
         .LESS, .LESS_EQUAL, .GREATER, .GREATER_EQUAL => evalComparison(left, right, bin.operator),
-        
+
         else => error.ExpressionDontExist,
     };
 }
@@ -129,8 +147,9 @@ fn evalEquality(left: Value, right: Value, op: TokenType) EvalError!Value {
         .string => |l| if (right == .string) std.mem.eql(u8, l, right.string) else false,
         .boolean => |l| if (right == .boolean) l == right.boolean else false,
         .none => right == .none,
+        .result => false, // new case: Results are not comparable yet
     };
-    
+
     return Value{ .boolean = if (op == .EQUAL_EQUAL) are_equal else !are_equal };
 }
 
@@ -168,7 +187,7 @@ fn evalDivision(left: Value, right: Value) EvalError!Value {
 
 fn evalComparison(left: Value, right: Value, op: TokenType) EvalError!Value {
     if (left != .number or right != .number) return error.TypeMismatch;
-    
+
     const result = switch (op) {
         .LESS => left.number < right.number,
         .LESS_EQUAL => left.number <= right.number,
@@ -176,14 +195,14 @@ fn evalComparison(left: Value, right: Value, op: TokenType) EvalError!Value {
         .GREATER_EQUAL => left.number >= right.number,
         else => unreachable,
     };
-    
+
     return Value{ .boolean = result };
 }
 
 fn evalUnary(state: *EvalState, un: Ast.UnaryExpr) EvalError!Value {
     // First, evaluate the operand (it could be any expression!)
     const operand = try evalExpr(state, un.operand.*);
-    
+
     return switch (un.operator) {
         .MINUS => blk: {
             if (operand != .number) return error.TypeMismatch;
@@ -376,7 +395,6 @@ test "evaluate equality comparison - true" {
 }
 
 test "evaluate inequality comparison" {
-
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -394,7 +412,6 @@ test "evaluate inequality comparison" {
 }
 
 test "evaluate less than comparison" {
-    
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -412,7 +429,6 @@ test "evaluate less than comparison" {
 }
 
 test "evaluate greater than comparison" {
-    
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -714,7 +730,6 @@ test "evaluate string with backslash" {
     try testing.expectEqualStrings("path\\to\\file", result.value.string);
 }
 
-
 test "error on adding string to number" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -726,7 +741,7 @@ test "error on adding string to number" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.TypeMismatch, result);
 }
 
@@ -741,7 +756,7 @@ test "error on multiplying strings" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.TypeMismatch, result);
 }
 
@@ -756,7 +771,7 @@ test "error on comparing string to number" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.TypeMismatch, result);
 }
 
@@ -771,7 +786,7 @@ test "error on undefined variable" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.UndefinedVariable, result);
 }
 
@@ -786,7 +801,7 @@ test "error on undefined variable in comparison" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.UndefinedVariable, result);
 }
 
@@ -795,7 +810,7 @@ test "error on variable redefinition (no shadowing allowed)" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = 
+    const source =
         \\x := 10
         \\x := 20
     ;
@@ -804,7 +819,7 @@ test "error on variable redefinition (no shadowing allowed)" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.VariableAlreadyDefined, result);
 }
 
@@ -813,7 +828,7 @@ test "error on shadowing with expression" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = 
+    const source =
         \\count := 1
         \\count := count + 1
     ;
@@ -822,7 +837,7 @@ test "error on shadowing with expression" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.VariableAlreadyDefined, result);
 }
 
@@ -831,7 +846,7 @@ test "error on shadowing with different type" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = 
+    const source =
         \\x := 42
         \\x := "now a string"
     ;
@@ -840,7 +855,7 @@ test "error on shadowing with different type" {
     defer program.deinit();
 
     const result = evaluate(program, arena.allocator(), .{});
-    
+
     try testing.expectError(error.VariableAlreadyDefined, result);
 }
 
@@ -934,7 +949,7 @@ test "evaluate negation of variable" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = 
+    const source =
         \\y := 10
         \\x := -y
     ;
@@ -946,4 +961,18 @@ test "evaluate negation of variable" {
     defer result.deinit();
 
     try testing.expectEqual(@as(f64, -10.0), result.value.number);
+}
+
+test "ResultValue constructs and distinguishes ok/err" {
+    const allocator = testing.allocator;
+
+    const v_none = try allocator.create(Value);
+    v_none.* = Value.none;
+    defer allocator.destroy(v_none);
+
+    const ok_val = Value{ .result = ResultValue.ok(v_none, null) };
+    const err_val = Value{ .result = ResultValue.err(v_none, null) };
+
+    try testing.expect(ok_val.result.tag == .ok);
+    try testing.expect(err_val.result.tag == .err);
 }
