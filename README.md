@@ -1,5 +1,8 @@
 # Ripple
 
+> ⚠️ **Early Development**: This README describes Ripple's vision. 
+> Currently, only basic language features are implemented. 
+
 **Operational scripts that don't lie about failures**
 
 Stop duct-taping together bash, Python, cron, systemd, and logging just to run reliable automation. Ripple is a functional, pipeline-oriented language designed specifically for operational scripts—with built-in scheduling, supervision, and observability.
