@@ -71,8 +71,8 @@ s3_url := "s3://backups"
 
 backup_db := db ->
   !Process.run "pg_dump " + db
-  |> ?Process.run "gzip " + _  or dump
-  |> S3.upload "{s3_url}/last_night_backups/{_}" _ 
+  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] 
+  |> S3.upload "{s3_url}/last_night_backups/db.gzip" _ 
 
 results := databases 
   |> List.parallel_map(backup_db, max_concurrent: 3)
