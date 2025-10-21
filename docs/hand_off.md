@@ -389,7 +389,93 @@ zig test src/evaluator.zig
 
 ---
 
-human-AI TDD pair-programming loop
+## 13. AI Collaboration Loop – TDD Iteration Protocol
+
+This section formalizes the **intended human–AI development workflow** for Ripple’s implementation.  
+It ensures the collaboration remains consistent, traceable, and test-driven.
+
+---
+
+### Overview
+
+Ripple’s development follows a **red–green–refactor** loop guided by TDD, with the AI acting as a **test author and design reviewer**.  
+Each iteration is driven by a single failing test that defines the next milestone in language functionality.
+
+---
+
+### Iteration Cycle
+
+1. **Feature Selection**  
+   The developer declares the next feature or milestone (e.g., “implement functions,” “add pipelines,” “introduce pattern matching”).
+
+2. **Test Generation (AI Step)**  
+   The AI provides **one failing test** written in Zig’s native test format:
+   ```zig
+   test "feature_name" {
+       // minimal reproducible case
+   }
+   ```
+   The test defines expected syntax and semantics for the feature.  
+   It should **fail initially**, confirming that the functionality is not yet implemented.
+
+3. **Implementation (Human Step)**  
+   The developer modifies the relevant modules (`parser.zig`, `evaluator.zig`, etc.) until the test passes.  
+   The implementation must:
+   - Use arena-safe allocations  
+   - Follow functional design principles  
+   - Produce no memory leaks
+
+4. **Review (AI Step)**  
+   Once the test passes, the AI:
+   - Reviews the submitted code  
+   - Suggests improvements (clarity, naming, structure, safety)  
+   - Updates documentation and reference spec if semantics are now stable
+
+5. **Next Iteration**  
+   The AI produces the **next failing test**, based on the updated language state.  
+   The loop repeats, building the language incrementally and verifiably.
+
+---
+
+### Example Iteration
+
+1. **Goal:** Implement function definitions and calls  
+2. **AI Provides Test:**
+   ```zig
+   test "simple function call" {
+       const src = "add := x, y -> x + y\nresult := add 10 32";
+       const value = try run(src);
+       try testing.expectEqual(42, value);
+   }
+   ```
+3. **Developer:** Implements parser + evaluator logic for lambdas  
+4. **Test:** Fails → Passes  
+5. **AI:** Reviews code, proposes next test (e.g., multi-line function, nested call)
+
+---
+
+### Collaboration Rules
+
+- **One test at a time** – each new feature is introduced by exactly one failing test.  
+- **No speculative implementation** – only code required to pass the current test is written.  
+- **Refactor after green** – cleanup occurs only after the test passes.  
+- **Zero leaks guarantee** – every iteration must maintain memory safety.  
+- **Traceable progress** – each passing test corresponds to a concrete feature milestone.
+
+---
+
+### Purpose
+
+This protocol ensures:
+- **Predictable progress:** Each iteration has a single measurable goal.  
+- **Code integrity:** No untested logic enters the codebase.  
+- **Historical traceability:** Every feature originates from a test.  
+- **Alignment:** The AI’s guidance always matches the project’s current state.
+
+---
+
+**In short:**  
+> *The AI writes the failing test. The human makes it pass. Together, they evolve Ripple one verified feature at a time.*
 
 **Ripple: operational scripts that don’t lie about failure.**
 
