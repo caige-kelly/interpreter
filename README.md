@@ -65,30 +65,26 @@ def backup():
 !Process.timeout = 600000
 
 databases := ["prod", "staging", "dev"]
-
 s3_url := "s3://backups"
 
 !Task.retry backup_db {max_retires: 3}
 backup_db := db ->
   !Process.run "pg_dump " + db
   |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] 
-  |> S3.upload "{s3_url}/last_night_backups/{db}.zip" _ 
+  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _ 
 
-results := databases 
-  |> List.parallel_map backup_db {max_concurrent: 3}
+results := databases.parallel_map backup_db {max_concurrent: 3}
 
-// Partition into successes and failures
-results |> List.partition |> match p ->
-  p p.failure.length == 0 ->
+// Partition ok, err Results into successes and failures
+result.partition [success, failure] |> match p ->
+  p.failure.length == 0 ->
     IO.stdout("✓ All " + p.success.length + " databases backed up")
   
-  p p.success.length == 0 ->
-    ?Alert.pagerduty("✗ Backup completely failed") or IO.stderr "Pager duty notification failed"
+  p.success.length == 0 ->
     Sys.exit(1)
   
-  p ->
-    ?Alert.slack("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed") or IO.stderr "Slack alert failed"
-    p.failure |> List.each(f -> IO.stderr("Failed: " + f))
+  any ->
+    p.failure |> map p -> IO.stderr "Failed: " + p
 ```
 
 ```bash
