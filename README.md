@@ -63,17 +63,17 @@ def backup():
 // fail if any of the system configurations return Err i.e misconfiguration
 !system::schedule "0 3 * * *"
 !system::trace_to  "s3://logs/ripple/"
-!system::on_failure email::Configure{email_config_map}.send_body("Backups failed")
+!system::on_failure email::Configure{?email_config_map}.send_body("Backups failed")
 !process::timeout 600000
 
                                                                     // Literals - Results, auto-unwrap in safe contexts
-databases := ["prod", "staging", "dev"]                             // Result<Ok([...])>
-s3_url    := "s3://backups"                                         // Result<Ok("s3://backups")>
+databases := ["prod", "staging", "dev"]                             // Result<Ok([...], list)>
+s3_url    := "s3://backups"                                         // Result<Ok("s3://backups", string)>
 
-!Task.retry{max_retires: 3} backup_db                                // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
-backup_db := db ->
+!Task.retry{max_retires: 3, sleep: 30s} backup_db                   // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
+backup_db := !db ->
   !process::run "pg_dump " + db                                      // ! = return value or panic
-  |> ?process::run ["gzip", _] or !process::run ["brotli", _]         // try gzip or brotli must work
+  |> ?process::run ["gzip", _] or !process::run ["brotli", _]        // try gzip or brotli must work
   |> !S3::upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
 
 results := databases.parallelMap{max_concurrent: 3} backup_db        // return [Result, Result, Result]
