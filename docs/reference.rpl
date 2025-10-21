@@ -1,474 +1,406 @@
-// -------------------------------------------------------------
-// Ripple Standard Reference (v5.0)
-// -------------------------------------------------------------
-//
-// Domains:
-//   # — Pure/tolerant (returns Value or none)
-//   @ — Monadic (returns Result.ok or Result.err)
-//
-// Result type (dual-channel):
-//   Result<T, E, S> = ok(T, S) | err(E, S)
-//     user: T or E  // semantic value (what your program cares about)
-//     sys:  S       // system metadata (what the runtime/supervisor tracks)
-//
-// Shorthands:
-//   ok(v)        ≡ ok(v, none)
-//   ok(_, s)     ≡ ok(none, s)
-//   err(v)       ≡ err(v, none)
-//   err(_, s)    ≡ err(none, s)
-//
-// Core operators:
-//   |>      — pipeline forward
-//   or      — associative fallback if left == none (identity: none)
-//   tap    — observe .err side effects, return the same Result unchanged
-//   then    — sequencing (discard left, run right)
-//   match   — destructure ok/err (only when you actually need branching)
-//   ^       — unwrap ok or propagate err upward (when unwrapping is needed)
-//   _       — placeholder for piped value inside an argument expression
-//
-// Algebra:
-//   Pure tolerant operations form a monoid:  identity = none, operator = or
-//   Monadic propagation:
-//     ok(u, s)  |> f = f(u, s)
-//     err(u, s) |> f = err(u, s)
-//   tap f:
-//     tap f (ok(u, s))  = ok(u, s)
-//     tap f (err(u, s)) = f(u, s) then err(u, s)
-//
-// -------------------------------------------------------------
-// Program supervision & tracing
-// -------------------------------------------------------------
-//
-// #Program.verbosity = quiet | normal | verbose
-//
-// When #Program.verbosity == verbose, the supervisor logs EVERY evaluated
-// expression as a trace event (no code changes needed):
-//
-//   line :: assignment :: function/operator :: user_value :: system_value
-//
-// - line:        source line number
-// - assignment:  the binding name being written (or _ if none)
-// - function/op: last intrinsic/operator executed
-// - user_value:  the user channel of value/result
-// - system_value:the sys channel (metadata: status, duration, ids, etc.)
-//
-// These logs are observational only and DO NOT affect execution semantics.
-// They exist to prevent “logging-only matches” and keep exception handling meaningful.
-//
-// Example trace lines (illustrative):
-//   15 :: file     :: #Map.validate    :: "validated 4 keys" :: {duration: 2ms}
-//   28 :: _        :: @Net.get         :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
-//   29 :: _        :: peek             :: ok(none)            :: {side_effect: "slack_posted"}
-//   30 :: deploy   :: or               :: {status: "skipped"} :: {source: "fallback"}
-//
-// -------------------------------------------------------------
-// 1. Basic values and pure operations
-// -------------------------------------------------------------
+# Ripple Standard Reference (v5.1 – draft)
 
-// =====================================================================
-// Design Philosophy: Language + IDE as Partners
-// =====================================================================
-//
-// Ripple's syntax is intentionally clean and minimal (like Python).
-// Type rigor and semantic clarity are provided by IDE tooling:
-//
-// - Hover over 'x := 5' to see 'x: number'
-// - Hover over '@fetch_user' to see 'returns Result<User, Error>'
-// - Inline type hints reveal inferred types throughout
-// - IDE marks @-functions differently from #-functions
-// - Verbose tracing available via IDE plugin
-//
-// This lets users write clean, simple code while the IDE reveals
-// the rigorous type system and error handling semantics underneath.
-// Best of Python's readability + Haskell's type safety.
-//
+> **Scope:** This is the *operational* language reference aligned with the current README semantics.  
+> **Key shifts vs v5.0:**  
+> - Everything fallible returns `Result<V,E,S>` **by default**.  
+> - **Call‑site intent prefixes** control handling: `!` (critical: unwrap or crash), `?` (optional: collapse to `value | none`).  
+> - `@/#` **definition markers are deprecated** (keep them as annotations in docs if desired, but semantics now hinge on call‑site intent).  
+> - `tap`, `or`, `then`, `match`, and the pipeline `|>` remain core.  
+> - No `^` unwrap operator; use `!` instead.  
+> - `peek` and ad‑hoc `try` keywords are removed. Use `tap` and `match`/prefixes.
 
-// =====================================================================
-// Type System & Values
-// =====================================================================
-//
-// Types are inferred and static (no implicit coercion).
-// Once a variable is a string, it's a string.
-//
-// Fundamental types:
-//   number      — unified int/float (hybrid: preserves int precision when possible)
-//   bool        — true or false
-//   string      — text
-//   none        — absence of value
-//
-// Composite types:
-//   [T]         — list of T
-//   {key: T}    — map with key → T
-//   Result<V, E> — monadic result (all stdlib functions return this)
-//
-// Result<V, E> has two channels:
-//   user: V or E  — the semantic value (what your code cares about)
-//   sys: S        — system metadata (duration, status, ids, etc.)
-//
+---
 
-// =====================================================================
-// Variables & Immutability
-// =====================================================================
+## 0. Core Model
 
-// Type inference with := (default, ~90% of use)
-x := 42                          // inferred as number (int precision)
-y := 3.14                        // inferred as number (float)
-name := "alice"                  // inferred as string
-active := true                   // inferred as bool
-none_value := none               // inferred as none type
+### Result type (dual‑channel)
+```ripple
+Result<V, E, S> = ok(V, S) | err(E, S)
 
-// number type unifies int and float operations
-sum := 10 + 5                    // number
-product := 2.5 * 4               // number
-mixed := 10 + 3.14               // number (both work together)
+// user channel: V or E  (your semantic payload)
+// sys  channel: S       (runtime metadata: duration, retries, ids, etc.)
+```
 
-// Explicit type annotation with = (rare, for clarity in complex pipelines)
-result: Result<User, Error> =
-  @Net.get url
-    |> @Map.parse _
-    |> @Map.validate schema _
+**Shorthands**
+```ripple
+ok(v)     ≡ ok(v, none)
+ok(_, s)  ≡ ok(none, s)
+err(v)    ≡ err(v, none)
+err(_, s) ≡ err(none, s)
+```
 
-file =
-  #File.read "./bad/path.json"
-  |> #Map.parse
-  |> #Map.get config
-  or
-  #File.read "./good/path.json"
-  |> #Map.parse
-  or #Map.new { default: "fallback" }
+### Call‑site intent prefixes
+- **`!op ...`** → Critical: unwrap `ok` or terminate (crash for now; policy later).  
+- **`?op ...`** → Optional: convert `Result<V,E,S>` to `V | none` (drop `E`, keep none).  
+- **No prefix** → Return `Result<V,E,S>`; caller must handle via `match`, pipe, etc.
 
-// Shadowing: rebind a name (creates new binding, old is unreachable)
+Examples:
+```ripple
+// Explicit handling (no prefix)
+body := Net.get url |> match ->
+  ok(b, _)  -> b
+  err(e, _) -> panic("fetch failed: " + e)
+
+// Optional
+cfg := ?File.read "config.json" or default_config
+
+// Critical
+strict := !File.read "critical.json"
+```
+
+### Core operators
+- `|>`   — pipeline forward (left value flows into right)  
+- `or`   — associative fallback for `none` (identity: `none`)  
+- `then` — sequence only if left is **not** `none` (pure tolerant chains)  
+- `tap`  — observe side effects; **never** change the flowing value/result  
+- `match`— pattern/guard based branching on `Result` or values  
+- `_`    — placeholder for the piped value within an argument position
+
+### Algebra
+- Pure tolerant chains form a monoid: **identity = `none`**, **operator = `or`**.  
+- Result propagation through pipelines (conceptual law):
+  ```ripple
+  ok(u, s)  |> f = f(u, s)
+  err(u, s) |> f = err(u, s)
+  ```
+- `tap f` laws:
+  ```ripple
+  tap f (ok(u, s))  = ok(u, s)
+  tap f (err(u, s)) = (f(u, s) then err(u, s))
+  ```
+
+---
+
+## 1. Program Supervision & Tracing
+
+```ripple
+#Program.verbosity = quiet | normal | verbose
+```
+
+When `verbose`, the supervisor emits a trace event **for every evaluated expression** (observational only):
+
+```
+line :: binding :: function/operator :: user_value :: system_value
+```
+
+- `line`        — source line number  
+- `binding`     — target name (or `_` if none)  
+- `function/op` — last intrinsic/operator evaluated  
+- `user_value`  — user channel (value or error)  
+- `system_value`— sys channel (metadata: duration, retries, status, etc.)
+
+**Example lines (illustrative):**
+```
+15 :: config  :: Map.validate :: "validated 4 keys" :: {duration: 2ms}
+28 :: _       :: Net.get      :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
+29 :: _       :: tap          :: ok(none)            :: {side_effect: "slack_posted"}
+30 :: deploy  :: or           :: {status: "skipped"} :: {source: "fallback"}
+```
+
+---
+
+## 2. Type System & Values
+
+- **Static inference**, no implicit coercions.  
+- **Fundamental:** `number` (unified int/float, keeps int precision when possible), `bool`, `string`, `none`.  
+- **Composite:** `[T]` (list), `{key: T}` (map), and `Result<V,E,S>` (fallible).
+
+```ripple
+x := 42
+y := 3.14
+name := "alice"
+active := true
+nothing := none
+```
+
+Numbers compose naturally:
+```ripple
+sum := 10 + 5
+prod := 2.5 * 4
+mixed := 10 + 3.14
+```
+
+---
+
+## 3. Variables & Immutability
+
+- Bindings are **immutable**.  
+- `:=` creates a new binding; **rebind** to “shadow” the old value.
+
+```ripple
 count := 1
-count := count + 1               // shadows previous count, now 2
-count := count * 2               // shadows again, now 4
+count := count + 1   // 2
+count := count * 2   // 4
+```
 
-// All variables are immutable by default
-// Rebinding with := creates a new binding; old binding is shadowed
-x := 10
-x := 20                          // OK: x is now 20, previous 10 is gone
-// (no reassignment operator; everything flows through functional style)
+Optional explicit annotation (rare, for clarity):
+```ripple
+resp: Result<User, Error, Meta> = Net.get url
+```
 
-// =====================================================================
-// Functions
-// =====================================================================
+---
 
-// Everything is a lambda bound to a name
-// (no fn keyword; functions are just expressions)
+## 4. Functions
 
-// Simple function
+Everything is a lambda bound to a name (no `fn` keyword). Calls do **not** use parentheses.
+
+```ripple
 add := a, b -> a + b
-result := add 10 32              // result = 42
+result := add 10 32     // 42
 
-// Functions with parameter type annotations (optional, for clarity)
 multiply := x: number, y: number ->
   x * y
 
-// Multi-line function (implicit return of last expression)
 process := x ->
   y := x + 1
   z := y * 2
-  z                              // implicitly returned
+  z                     // implicit return (last expression)
+```
 
-// Monadic function (returns Result, caller decides interpretation)
-// Marked with @ in definition → returns Result<T, E>
-@fetch_user := id ->
-  @Net.get ("https://api.example.com/users/" + id)
-    |> @Map.parse _
-    |> @Map.translate default _ { id: id, name: name }
+**Stdlib convention:** All fallible operations return `Result<V,E,S>`.  
+Purity is expressed by **call‑site intent** (`!`, `?`, or explicit `match`).
 
-// Tolerant function (marked with # in definition)
-// Returns value | none (errors are suppressed)
-#load_config := path ->
-  #File.read path
-    |> #Map.parse _
-    or #Map.new { env: "dev" }
+---
 
-// =====================================================================
-// Result Interpretation (Caller-Driven)
-// =====================================================================
+## 5. Result Interpretation (Caller‑Driven)
 
-// The stdlib returns Result<T, E> by default.
-// The caller decides how to interpret it using @ or #.
+```ripple
+// Monadic: explicit handling
+data := Net.get "https://example.com/api" |> match ->
+  ok(body, _)  -> body
+  err(msg, _)  -> panic("failed: " + msg)
 
-// Example: @Net.get always returns Result<Body, Error>
+// Optional: collapse to value | none
+maybe_body := ?Net.get "https://example.com/api"
 
-// 1. MONADIC: Use @ to expose both channels
-response := @Net.get "https://example.com/api"
-response
-  |> match ->
-       ok(body, meta) ->
-         #IO.stdout ("Status: " + meta.status)
-       err(msg, meta) ->
-         #IO.stdout ("Error: " + msg)
+// Critical: unwrap or crash
+body := !Net.get "https://example.com/api"
+```
 
-// 2. TOLERANT: Use # to collapse to value | none
-data := #Net.get "https://example.com/api"
-// If the request succeeds: data = body
-// If it fails: data = none
+---
 
-config =
-  #File.read ./config.json something this
-  |> #Map.parse
-  or #Map.new { env: dev, service: demo }
+## 6. Pipelines (`|>`)
 
-// =====================================================================
-// Pipeline Operator (|>)
-// =====================================================================
+Forward the left value into the right expression. Use `_` to position the piped value among other args.
 
-// Forward pipe: pass result of left into right
+```ripple
 result :=
   "hello world"
-    |> #String.uppercase _
-    |> #String.split " "
+    |> String.uppercase _
+    |> String.split " "
+```
 
-Default = {
-  h: ""
-  b: ""
-  status_code = -1
-  metadata = "additonal Metadata"
-}
+Another example (cleaned and consistent):
+```ripple
+Default := { h: "", b: "", status_code: -1, metadata: "additional" }
+url := "example.com/data"
 
-url = "example.com/data"
-
-data = url ->
-  try @Net.get "https://"  + url  // returns "{ "header": "some header", "body": "some body"}
-  |> try @Map.parse json _
-  |> try @Map.translate default _ { header: h, body: b }
-  |> tap e -> @IO.stdout "Fetch or parse failed: " + e
-or
-  try @Net.get "http://" + url // returns "{ "header": "some header", "body": "some body"}
-  |> try @Map.parse json _
-  |> try @Map.validate Default _ and #Map.merge Default
-  |> tap e -> @IO.stdout "Fetch or parse failed: " + e
-or
-  Default
-
-// =====================================================================
-// Tolerant Operators
-// =====================================================================
-
-// or: fallback if left is none (monoid identity: none)
-fallback :=
-  #File.read "./optional.json"
-    or #Map.new { default: true }
-
-// then: sequence only if left is present (not none)
-// Right side only evaluates if left is not none
-result :=
-  #File.read "./required.json"
-    then #Map.parse _
-    then #Map.validate schema _
-
-// =====================================================================
-// tap: Observational Side Effects
-// =====================================================================
-
-// tap performs side effects without changing the piped value
-// Pattern matches the value; if match succeeds, runs side effect; always returns original value
-
-// Observe Result errors (only runs if err pattern matches)
-result :=
-  @Net.post "https://api.example.com/events" payload
-    |> tap err(msg, meta) ->
-         @Slack.post ("Error posting event: " + msg)
-    or #Map.new { status: "failed" }
-
-// Observe Result success (only runs if ok pattern matches)
 data :=
-  @Net.get url
-    |> tap ok(body, meta) ->
-         @IO.stdout ("Fetched: " + body)
-    |> @Map.parse _
-
-data2 =
-  @File.read ./input.txt
-  |> @Map.parse _
-  |> peek e -> @IO.stdout "Parse failed: " + e
-  or #Map.new { data: none }
-
-// Pattern matching on complex structures
-users :=
-  @fetch_users
-    |> tap [head, ...rest] ->
-         @IO.stdout ("First user: " + head.name)
-    |> tap any ->
-         @IO.stdout ("Processed users")
-
-// =====================================================================
-// Pattern Matching
-// =====================================================================
-
-// match: destructure Result or other values
-response :=
-  @Net.get "https://example.com/status"
+  Net.get ("https://" + url)
     |> match ->
-         ok(body, meta) ->
-           "Service healthy: " + body.status
-         err(msg, meta) ->
-           "Service down: " + msg
+         ok(resp, _) -> resp
+         err(_, _)   -> Net.get ("http://" + url) |> match ->
+                           ok(resp2, _) -> resp2
+                           err(_, _)    -> none
+    |> ?Map.parse json _
+    then Map.translate Default _ { header: h, body: b }
+    or Default
+```
 
-// match can also be on other types
-status := "active"
+---
+
+## 7. Tolerant Operators
+
+### `or` — fallback for `none` (identity = `none`)
+```ripple
+cfg := (?File.read "./optional.json") or Map.new { default: true }
+```
+
+### `then` — sequence when value is **not** `none`
+```ripple
+result :=
+  ?File.read "./required.json"
+    then Map.parse _
+    then Map.validate schema _
+```
+
+---
+
+## 8. `tap` — Observational Side Effects
+
+`tap` inspects the flowing value/result, triggers side effects, and **returns the original**.
+
+Errors:
+```ripple
+post_result :=
+  Net.post url payload
+    |> tap err(msg, meta) ->
+         Slack.post ("Error: " + msg)
+    |> match ->
+         ok(v, _)  -> v
+         err(_, _) -> Map.new { status: "failed" }
+```
+
+Success:
+```ripple
+parsed :=
+  Net.get url
+    |> tap ok(body, meta) -> IO.stdout ("Fetched in " + meta.duration + "ms")
+    |> match ->
+         ok(body, _) -> Map.parse body
+         err(_,   _) -> err("fetch failed")
+```
+
+---
+
+## 9. Pattern Matching (`match`)
+
+Replace `if/else` entirely. Patterns + optional guards control flow.
+
+### Match on `Result`
+```ripple
+status_msg :=
+  Net.get "https://example.com/status"
+    |> match ->
+         ok(body, meta) -> "Service healthy: " + body.status
+         err(msg,  meta) -> "Service down: " + msg
+```
+
+### Match on values
+```ripple
 message :=
-  status |> match ->
+  "active" |> match ->
     "active" -> "Running"
     "paused" -> "Paused"
-    any -> "Unknown"
+    any      -> "Unknown"
+```
 
-// =====================================================================
-// Collections
-// =====================================================================
+**Exhaustiveness**
+- Algebraic/finite domains (e.g., `Result`, `bool`) must cover all constructors.  
+- Open domains (`number`, `string`) require `any` as a catch‑all.
 
-// Lists
+---
+
+## 10. Collections
+
+### Lists
+```ripple
 numbers := [1, 2, 3, 4, 5]
 empty_list := []
+nested := [[1, 2], [3, 4], [5, 6]]
+```
 
-nested := [
-  [1, 2],
-  [3, 4],
-  [5, 6]
-]
-
-// Maps
-user := {
-  id: 42,
-  name: "alice",
-  email: "alice@example.com"
-}
-
+### Maps
+```ripple
+user := { id: 42, name: "alice", email: "alice@example.com" }
 empty_map := {}
 
-// Map access (returns none if key missing)
-user_name := #Map.get user "name"      // returns "alice" or none
+user_name := Map.get user "name"  // "alice" | none
 user_name or "unknown"
+```
 
-// =====================================================================
-// Control Flow via match
-// =====================================================================
+> **Convention:** `Map.get` returns `value | none`. Most other Map ops are fallible and return `Result`.
 
-// match replaces if/else (no if/else in this language)
-status |> match ->
-  "active" -> "Running"
-  "paused" -> "Paused"
-  any -> "Unknown"
+---
 
-// =====================================================================
-// Comprehensive Example: Web Service Request Pipeline
-// =====================================================================
+## 11. None Propagation (Pure/Tolerant Chains)
 
-@get_user_posts := user_id ->
-  user_data :=
-    @Net.get ("https://api.example.com/users/" + user_id)
-      |> @Map.parse _
+When operating on `value | none`, `none` short‑circuits tolerant chains; later steps are skipped.
 
-  posts_data :=
-    @Net.get ("https://api.example.com/posts?user=" + user_id)
-      |> @Map.parse _
-
-  combined :=
-    user_data
-      |> @Map.translate default _
-           { user: user, posts: posts_data }
-
-  combined
-
-// Caller can use it monadically
-result := @get_user_posts 123
-result
-  |> match ->
-       ok(data, meta) ->
-         #IO.stdout ("Fetched " + data.posts.length + " posts")
-       err(msg, meta) ->
-         @Slack.post ("Failed to fetch posts: " + msg)
-
-// Or tolerantly
-posts := #get_user_posts 123
-// posts = [Post, ...] or none
-
-// =====================================================================
-// Indentation-Based Blocks
-// =====================================================================
-
-process_data := raw_json ->
-  data := #Map.parse raw_json   // bind parsed data
-
-  data := data                   // shadow: validate and enrich
-    |> @Map.validate schema _
-    |> match ->
-         ok(v, m) -> v
-         err(e, m) -> #Map.new { default: true }
-
-  data                           // implicitly returned
-
-// =====================================================================
-// Error Handling with Graceful Fallback
-// =====================================================================
-
-deployed :=
-  @File.read "./deploy.json"
-    |> @Map.parse _
-    |> @Net.post "https://deploy.example.com" _
-    |> tap err ->
-         @Slack.post ("Deploy failed: " + err)
-    or #Map.new { status: "skipped" }
-
-#IO.stdout ("Deploy result: " + deployed.status)
-
-// =====================================================================
-// None Propagation (Pure/Tolerant Context)
-// =====================================================================
-
-// In a pure chain, none propagates and skips later steps
+```ripple
 result :=
-  #File.read "./missing.json"
-    |> #Map.parse _
-    |> #IO.stdout "This won't print"
+  ?File.read "./missing.json"
+    then Map.parse _
+    then IO.stdout _   // never reached
+// result == none
+```
 
-// result is none, and "This won't print" is never executed
+---
 
-// =====================================================================
-// Program Supervision & Tracing
-// =====================================================================
+## 12. Standard Library (Signatures)
 
-#Program.verbosity = "verbose"
+> **Rule of thumb:** All fallible I/O and transformations return `Result<V,E,S>`.  
+> Pure/total transforms return plain values. `Map.get` is special‑cased to `value | none`.
 
-// When verbose, the supervisor logs EVERY evaluated expression:
-//   line :: binding :: function/operator :: user_value :: system_value
-//
-// Example trace lines:
-//   15 :: config :: #File.read :: "..." :: {duration: 2ms}
-//   28 :: _ :: @Net.get :: err("ECONNREFUSED") :: {retries: 3, ms: 1200}
-//   29 :: _ :: tap :: ok(...) :: {side_effect: "slack_posted"}
-//   30 :: deploy :: or :: { status: "skipped" } :: {source: "fallback"}
+### File
+```ripple
+File.read  : path -> Result<string, Error, Meta>
+File.write : path data -> Result<none, Error, Meta>
+```
 
-// =====================================================================
-// Standard Library (Partial List)
-// =====================================================================
+### Map
+```ripple
+Map.parse    : text -> Result<Map, Error, Meta>
+Map.validate : map schema -> Result<Map, Error, Meta>
+Map.translate: defaults map -> Result<Map, Error, Meta>
+Map.get      : map key -> value | none
+Map.new      : initial -> Map
+```
 
-// File I/O (returns Result)
-@File.read := path -> Result<string, Error>
-@File.write := path data -> Result<none, Error>
+### Net
+```ripple
+Net.get  : url -> Result<string, Error, Meta>
+Net.post : url body -> Result<string, Error, Meta>
+```
 
-// Map operations (returns Result)
-@Map.parse := text -> Result<Map, Error>
-@Map.validate := map schema -> Result<Map, Error>
+### String (pure)
+```ripple
+String.uppercase : text -> string
+String.split     : text sep -> [string]
+```
 
-// Network (returns Result)
-@Net.get := url -> Result<string, Error>
-@Net.post := url data -> Result<string, Error>
+### IO (fallible side effects)
+```ripple
+IO.stdout : message -> Result<none, Error, Meta>
+IO.exit   : code -> Result<none, Error, Meta>
+```
 
-// String operations (tolerant)
-#String.uppercase := text -> string
+### Slack (fallible side effects)
+```ripple
+Slack.post : message -> Result<none, Error, Meta>
+```
 
-#String.split := text sep -> [string]
+---
 
-// IO (returns Result for side effects)
-@IO.stdout := message -> Result<none, Error>
-@IO.exit := code -> Result<none, Error>
+## 13. Comprehensive Example
 
-// Slack integration (returns Result)
-@Slack.post := message -> Result<none, Error>
+```ripple
+targets := [
+  {arch: "x86_64", os: "linux"},
+  {arch: "aarch64", os: "linux"},
+  {arch: "x86_64", os: "darwin"},
+]
 
-// =====================================================================
-// End of Reference
-// =====================================================================
+build := t ->
+  !Process.run ("cargo build --release --target " + t.arch + "-" + t.os)
+    |> sign
+    |> upload_to "releases/"
+
+results := targets |> List.parallel_map build max_concurrent: 4
+
+results |> List.partition |> match p ->
+  p p.failure.length == 0 ->
+    IO.stdout ("✓ All " + p.success.length + " builds succeeded")
+
+  p p.success.length == 0 ->
+    !Alert.pagerduty ("✗ Build completely failed")
+    !IO.exit 1
+
+  p ->
+    IO.stderr ("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
+    Alert.slack ("Build partially failed. Succeeded: " + p.success)
+```
+
+---
+
+## 14. Status Notes (v5.1 – draft)
+
+- Prefix semantics (`!`, `?`) are **authoritative** at call sites.  
+- `@/#` **definition markers are deprecated**; tools may still display them as hints.  
+- `match`, `tap`, pipelines, `or`, `then`, placeholder `_` are core.  
+- Parentheses are **only** for expression grouping (not function calls).  
+- No boolean keywords; boolean operators `&&`, `||`, `!` are available for guards when needed.
+
+---
+
+*End of Reference*
