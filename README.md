@@ -301,18 +301,18 @@ targets := [
 
 build := target ->
   @Process.run ("cargo build --release --target " + target.arch + "-" + target.os)
-    then _ -> @Process.run ("./scripts/sign.sh " + target.arch + "-" + target.os)
-    then _ -> @S3.upload ("target/" + target.arch + "-" + target.os + "/release/app") "releases/"
-    then _ -> target.arch + "-" + target.os
+  then @Process.run ("./scripts/sign.sh " + target.arch + "-" + target.os)
+  then @S3.upload ("target/" + target.arch + "-" + target.os + "/release/app") "releases/"
+  then target.arch + "-" + target.os
 
 results := targets 
   |> List.parallel_map (t -> build t) {max_concurrent: 4}
 
 results |> List.partition_results |> match ->
-  all_ok(builds, meta) ->
+  ok(_, meta) len(builds) == len(targets) ->
     @IO.stdout ("✓ All builds succeeded in " + meta.duration + "ms")
     @GitHub.create_release "v1.0.0" builds
-  partial(succeeded, failed, meta) ->
+  ok(succeeded) len(succeeded) < len(targets) ->
     @IO.stdout ("✓ Built: " + #String.join succeeded ", ")
     @Slack.post ("Release partially failed. Built: " + succeeded)
 ```
@@ -326,12 +326,11 @@ results |> List.partition_results |> match ->
 
 check_health := service ->
   @Net.get service.url {timeout: 5000}
-    then (resp -> 
-      @Result.ensure resp 
-        (r -> r.status == 200 && r.body.status == "healthy")
-        (service.name + " unhealthy")
-    )
-    then _ -> service.name
+  then resp -> 
+    @Result.ensure r -> r.status == 200 && r.body.status == "healthy"
+    then service.name
+    or service.name + " unhealthy"
+    
 
 services := [
   {name: "api", url: "https://api.example.com/health"},
@@ -342,8 +341,8 @@ results := services
   |> List.parallel_map (s -> check_health s) {max_concurrent: 3}
 
 results |> List.partition_results |> match ->
-  all_ok(_, _) -> @Metrics.gauge "health.all_up" 1
-  partial(healthy, unhealthy, _) ->
+  ok() -> @Metrics.gauge "health.all_up" 1
+  error(unhealthy) ->
     unhealthy |> List.each (f ->
       @Metrics.gauge ("health." + f.value.name) 0
       @Alert.slack ("⚠️ " + f.value.name + " is unhealthy")
