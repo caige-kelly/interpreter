@@ -60,26 +60,25 @@ def backup():
 ```ripple
 // backup.rip - everything in one place
 
-// fail if any of the system configurations return Err
+// fail if any of the system configurations return Err i.e mis configuration
 !System.schedule = "0 3 * * *"
 !System.trace_to = "s3://logs/ripple/"
 !System.on_failure = Alert.pagerduty("Backup failed")
 !Process.timeout = 600000
 
-// Literals - Results, auto-unwrap in safe contexts
-databases := ["prod", "staging", "dev"]    // Result<Ok([...])>
-s3_url := "s3://backups"                   // Result<Ok("s3://backups")>
+                                                                    // Literals - Results, auto-unwrap in safe contexts
+databases := ["prod", "staging", "dev"]                             // Result<Ok([...])>
+s3_url := "s3://backups"                                            // Result<Ok("s3://backups")>
 
-!Task.retry backup_db {max_retires: 3} //retry backup_db up to 3 times if there is an Err returned
+!Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned
 backup_db := db ->
-  !Process.run "pg_dump " + db // must work
-  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] //try gzip or brotli must work
-  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _  // s3 must work
+  !Process.run "pg_dump " + db                                      // ! = return value or panic
+  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _]         // try gzip or brotli must work
+  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
 
-results := databases.parallel_map backup_db {max_concurrent: 3} // return [Result, Result, Result]
+results := databases.parallel_map backup_db {max_concurrent: 3}     // return [Result, Result, Result]
 
-// Partition results by ok, err into successes and failures
-result.partition [success, failure] |> match p ->
+result.partition [success, failure] |> match p ->                   // Partition results by ok, err into successes and failures
   p.failure.length == 0 ->
     IO.stdout("✓ All " + p.success.length + " databases backed up")
   
@@ -141,7 +140,7 @@ except Exception as e:
 **Ripple:** Errors flow inline with your logic
 ```ripple
 // Default: Returns Result, handle explicitly
-result := ^step1.unwrap_or rollback1 // unwrap Result, on err execute rollback1 and with ^ propogate error up pipeline
+result := ^step1.unwrap_or rollback1                  // unwrap Result, on err execute rollback1 and with ^ propagate error up pipeline
   |> ^step2.unwrap_or rollback2
   |> ^step3.unwrap_or rollback3
 
@@ -161,6 +160,7 @@ critical_config := !File.read("required.json")
 - (no symbol) = Returns `Result<V, E>`, handle explicitly
 - `?` = Optional: Returns `value | none`, use `or` for fallback
 - `!` = Critical: Unwraps or crashes, for unrecoverable operations
+- `^` = Propagate: Unwrap and return Err up the call chain
 
 ### 3. Expression-Level Observability Built In
 
@@ -226,19 +226,17 @@ if failed:
 ```ripple
 servers := ["web-1", "web-2", "web-3"]
 
-results := servers 
-  |> List.parallel_map(deploy, max_concurrent: 3)
+results := servers.parallel_map(deploy, max_concurrent: 3)
 
-// Partition into successes and failures
-results |> List.partition |> match p ->
-  p p.failure.length == 0 ->
+results.partition [failure, success] |> match result ->
+  result.failure.length == 0 ->
     IO.stdout("✓ Deployed to all " + p.success.length + " servers")
   
-  p p.success.length == 0 ->
+  result.success.length == 0 ->
     !Alert.pagerduty("✗ Deploy completely failed")
     !IO.exit(1)
   
-  p ->
+  any ->
     !Alert.slack("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
     rollback(p.success)  // Rollback what succeeded
 ```
@@ -287,7 +285,7 @@ rvm restart backup.rip
 ```ripple
 x := 42
 add := a, b -> a + b
-result := add(10, 32)  // 42
+result := add 10 32  // 42
 ```
 
 **Pipelines**
@@ -295,7 +293,8 @@ result := add(10, 32)  // 42
 result := "hello world"
   |> String.uppercase
   |> String.split(" ")
-  |> List.map(word -> word + "!")
+  |> map word -> word + "!"
+  |> !Result.unwrap             // !_.unwrap would probably work? but pretty ugly. 
 ```
 
 **Pattern Matching** (No `if` keyword!)
