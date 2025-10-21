@@ -59,11 +59,11 @@ def backup():
 
 ```ripple
 // backup.rip - everything in one place
-#System.schedule = "0 3 * * *"
-#System.trace_to = "s3://logs/ripple/"
-#System.on_failure = Alert.pagerduty("Backup failed")
-#Process.timeout = 600000
-#Process.retries = 3
+System.schedule = "0 3 * * *"
+System.trace_to = "s3://logs/ripple/"
+System.on_failure = Alert.pagerduty("Backup failed")
+Process.timeout = 600000
+Process.retries = 3
 
 databases := ["prod", "staging", "dev"]
 
