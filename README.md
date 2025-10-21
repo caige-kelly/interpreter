@@ -81,11 +81,11 @@ results |> List.partition |> match p ->
     IO.stdout("✓ All " + p.success.length + " databases backed up")
   
   p p.success.length == 0 ->
-    !Alert.pagerduty("✗ Backup completely failed")
-    !IO.exit(1)
+    ?Alert.pagerduty("✗ Backup completely failed") or IO.stderr "Pager duty notification failed"
+    Sys.exit(1)
   
   p ->
-    !Alert.slack("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
+    ?Alert.slack("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed") or IO.stderr "Slack alert failed"
     p.failure |> List.each(f -> IO.stderr("Failed: " + f))
 ```
 
