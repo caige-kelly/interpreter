@@ -62,15 +62,15 @@ def backup():
 
 // fail if any of the system configurations return Err i.e mis configuration
 !system::schedule "0 3 * * *"
-!system::trace_to "s3://logs/ripple/"
+!system::trace_to  "s3://logs/ripple/"
 !system::on_failure Alert.pagerduty("Backup failed")
 !process::timeout 600000
 
                                                                     // Literals - Results, auto-unwrap in safe contexts
 databases := ["prod", "staging", "dev"]                             // Result<Ok([...])>
-s3_url := "s3://backups"                                            // Result<Ok("s3://backups")>
+s3_url    := "s3://backups"                                         // Result<Ok("s3://backups")>
 
-!Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned
+!Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
 backup_db := db ->
   !process::run "pg_dump " + db                                      // ! = return value or panic
   |> ?process::run ["gzip", _] or !Process.run ["brotli", _]         // try gzip or brotli must work
