@@ -75,7 +75,7 @@ backup_db := db ->
   |> S3.upload "{s3_url}/last_night_backups/{db}.zip" _ 
 
 results := databases 
-  |> List.parallel_map(backup_db, max_concurrent: 3)
+  |> List.parallel_map backup_db {max_concurrent: 3}
 
 // Partition into successes and failures
 results |> List.partition |> match p ->
