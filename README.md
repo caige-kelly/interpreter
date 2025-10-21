@@ -63,7 +63,7 @@ def backup():
 // fail if any of the system configurations return Err i.e mis configuration
 !system::schedule "0 3 * * *"
 !system::trace_to  "s3://logs/ripple/"
-!system::on_failure Alert.pagerduty("Backup failed")
+!system::on_failure email::configure(email_config_map).send_body("Backups failed")
 !process::timeout 600000
 
                                                                     // Literals - Results, auto-unwrap in safe contexts
