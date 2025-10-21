@@ -71,6 +71,7 @@ databases := ["prod", "staging", "dev"]                             // Result<Ok
 s3_url    := "s3://backups"                                         // Result<Ok("s3://backups", string)>
 
 !Task.retry{max_retires: 3, sleep: 30s} backup_db                   // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
+                                                                    // Not sure yet but system, process, task will probabably be preprocessed and handled by the VM, should always be ! unless there's a good reason not
 backup_db := ?db ->
   ^process::run "pg_dump " + db                                      // ^ propagate errors up 
   |> ?process::run ["gzip", _] or ^process::run ["brotli", _]        // try gzip or brotli must work
