@@ -299,7 +299,7 @@ result := "hello world"
 
 **Pattern Matching** (No `if` keyword!)
 ```ripple
-temperature |> match t ->
+temperature.unwrap |> match t ->
   60 <= t <= 80 -> "comfortable"     // Chained comparison
   t < 60 -> "cold"
   t -> "hot"                         // Catch-all
