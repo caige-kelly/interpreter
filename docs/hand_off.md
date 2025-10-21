@@ -389,5 +389,7 @@ zig test src/evaluator.zig
 
 ---
 
+human-AI TDD pair-programming loop
+
 **Ripple: operational scripts that don’t lie about failure.**
 
