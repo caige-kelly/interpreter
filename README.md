@@ -61,10 +61,10 @@ def backup():
 // backup.rip - everything in one place
 
 // fail if any of the system configurations return Err i.e mis configuration
-!System.schedule = "0 3 * * *"
-!System.trace_to = "s3://logs/ripple/"
-!System.on_failure = Alert.pagerduty("Backup failed")
-!Process.timeout = 600000
+!system::schedule "0 3 * * *"
+!system::trace_to "s3://logs/ripple/"
+!system::on_failure Alert.pagerduty("Backup failed")
+!process::timeout 600000
 
                                                                     // Literals - Results, auto-unwrap in safe contexts
 databases := ["prod", "staging", "dev"]                             // Result<Ok([...])>
@@ -72,21 +72,21 @@ s3_url := "s3://backups"                                            // Result<Ok
 
 !Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned
 backup_db := db ->
-  !Process.run "pg_dump " + db                                      // ! = return value or panic
-  |> ?Process.run ["gzip", _] or !Process.run ["brotli", _]         // try gzip or brotli must work
-  |> !S3.upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
+  !process::run "pg_dump " + db                                      // ! = return value or panic
+  |> ?process::run ["gzip", _] or !Process.run ["brotli", _]         // try gzip or brotli must work
+  |> !S3::upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
 
 results := databases.parallel_map backup_db {max_concurrent: 3}     // return [Result, Result, Result]
 
-result.partition [success, failure] |> match p ->                   // Partition results by ok, err into successes and failures
+results.partition [success, failure] |> match p ->                   // Partition results by ok, err into successes and failures
   p.failure.length == 0 ->
-    IO.stdout("✓ All " + p.success.length + " databases backed up")
+    io::stdout("✓ All " + p.success.length + " databases backed up")
   
   p.success.length == 0 ->
-    Sys.exit(1)
+    sys::exit(1)
   
   any ->
-    p.failure |> map p -> IO.stderr "Failed: " + p
+    p.failure |> map p -> io::stderr "Failed: " + p
 ```
 
 ```bash
@@ -146,14 +146,14 @@ result := ^step1.unwrap_or rollback1                  // unwrap Result, on err e
 
 match result {
   Ok(v) -> process(v)
-  Err(e, meta) -> IO.stdout "encountered error: " + e + "...rolled back" then Sys.exit(1)
+  Err(e, meta) -> io::stdout "encountered error: " + e + "...rolled back" then sys::exit(1)
 }
 
 // ? = Optional: Errors become none, provide fallback
-config := ?File.read("config.json") or default_config
+config := ?file::read("config.json") or default_config
 
 // ! = Critical: Must succeed or crash
-critical_config := !File.read("required.json")
+critical_config := !file::read("required.json")
 ```
 
 **Choose your semantics at the call site:**
@@ -230,15 +230,15 @@ results := servers.parallel_map(deploy, max_concurrent: 3)
 
 results.partition [failure, success] |> match result ->
   result.failure.length == 0 ->
-    IO.stdout("✓ Deployed to all " + p.success.length + " servers")
+    io::stdout("✓ Deployed to all " + p.success.length + " servers")
   
   result.success.length == 0 ->
-    !Alert.pagerduty("✗ Deploy completely failed")
-    !IO.exit(1)
+    !PagerDuty::alert("✗ Deploy completely failed")
+    !io::exit(1)
   
   any ->
-    !Alert.slack("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
-    rollback(p.success)  // Rollback what succeeded
+    !Slack::alert("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
+    rollback p.success  // Rollback what succeeded
 ```
 
 **How it works:**
@@ -291,39 +291,39 @@ result := add 10 32  // 42
 **Pipelines**
 ```ripple
 result := "hello world"
-  |> String.uppercase
-  |> String.split(" ")
+  |> string::uppercase
+  |> string::split(" ")
   |> map word -> word + "!"
-  |> !Result.unwrap             // !_.unwrap would probably work? but pretty ugly. 
+  |> !result::unwrap             // !_.unwrap would probably work? but pretty ugly. 
 ```
 
 **Pattern Matching** (No `if` keyword!)
 ```ripple
-temperature.unwrap |> match t ->
+temperature |> match t ->            // Automatic unwrap by pipeline
   60 <= t <= 80 -> "comfortable"     // Chained comparison
   t < 60 -> "cold"
   t -> "hot"                         // Catch-all
 
 // Result matching
-response |> match ->
+match result ->                      // match pattern to keep Result object in tact
   ok(data, meta) ->
-    IO.stdout("Success in " + meta.duration + "ms")
+    io::stdout("Success in " + meta.duration + "ms")
   err(msg, meta) ->
-    Slack.post("Error: " + msg)
+    Slack::post("Error: " + msg)
 ```
 
 **Error Handling**
 ```ripple
 // Returns Result by default
-data := Net.get(url) |> match ->
+data := match Net::get url ->
   ok(body, _) -> body
   err(e, _) -> panic("Failed: " + e)
 
 // Optional with ?
-avatar := ?Net.get(avatar_url) or default_avatar
+avatar := ?net::get(avatar_url) or default_avatar
 
 // Critical with !
-config := !File.read("critical.json")  // Crashes if missing
+config := !file::read("critical.json")  // Crashes if missing
 ```
 
 ## Real-World Examples
@@ -338,21 +338,21 @@ targets := [
 ]
 
 build := target ->
-  !Process.run("cargo build --release --target " + target.arch + "-" + target.os)
+  !process::run("cargo build --release --target " + target.arch + "-" + target.os)
     |> sign
-    |> upload_to("releases/")
+    |> upload_to "releases/"
 
 results := targets 
-  |> List.parallel_map(build, max_concurrent: 4)
+  |> list::parallel_map build, {max_concurrent: 4}
 
-results |> List.partition |> match p ->
-  p p.failure.length == 0 ->
-    IO.stdout("✓ All " + p.success.length + " builds succeeded")
-    GitHub.create_release("v1.0.0", p.success)
+results |> list::partition [succeeded, failure] |> match p ->
+  p.failure.length == 0 ->
+    io::stdout("✓ All " + p.success.length + " builds succeeded")
+    GitHub::create_release("v1.0.0", p.success)
   
-  p p.success.length == 0 ->
-    !Alert.pagerduty("✗ Build completely failed")
-    !IO.exit(1)
+  p.success.length == 0 ->
+    !alert::pagerduty("✗ Build completely failed")
+    !io::exit(1)
   
   p ->
     IO.stderr("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
@@ -367,7 +367,7 @@ results |> List.partition |> match p ->
 !Process.timeout = 30000
 
 check_health := service ->
-  Net.get service.url |> match ->
+   match net::get service::url ->
     ok(resp, _) resp.status == 200 && resp.body.status == "healthy" ->
       ok(service.name)
     ok(_, _) ->
@@ -382,7 +382,7 @@ services := [
 
 results := services.parallel_map(check_health, max_concurrent: 3)
 
-results |> List.partition [failure, success] |> match p ->
+results |> list::partition [failure, success] |> match p ->
   p.failure.length == 0 ->
     Metrics.gauge("health.all_up", 1)
   
