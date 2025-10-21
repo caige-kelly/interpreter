@@ -677,6 +677,77 @@ result :=
 
 ## Design Decisions
 
+### Everything Returns Result
+
+**Ripple's core principle: All fallible operations return `Result<T, E>`.**
+
+```ripple
+// Default: Returns Result, must handle explicitly
+data := Net.get(url) |> match ->
+  ok(body, _) -> body
+  err(e, _) -> handle_error(e)
+```
+
+**No special symbols by default** - the return type tells you what can fail.
+
+### Intent Prefixes: `!` and `?`
+
+**Use prefixes to declare intent at the call site:**
+
+**`!` = Critical (must succeed or crash):**
+```ripple
+config := !File.read("critical.json")  // Crashes if missing
+user := !fetch_user(id)                 // Unrecoverable if fails
+```
+
+**`?` = Optional (returns value | none):**
+```ripple
+avatar := ?fetch_avatar(user.id) or default_avatar
+theme := ?load_theme() or light_theme
+```
+
+**No prefix = Explicit handling required:**
+```ripple
+result := Net.get(url) |> match ->
+  ok(data, _) -> process(data)
+  err(e, _) -> log_error(e)
+```
+
+**Rationale:**
+- `!` and `?` are **semantic opposites**: certainty vs uncertainty
+- **Universally understood**: ! = important/critical, ? = maybe/optional
+- **Clear at call site**: Intent is visible without checking function signature
+- **No overloading**: Distinct from Rust's postfix usage
+
+### Batch Operations with List.partition
+
+**For handling lists of Results, use `List.partition`:**
+
+```ripple
+results := servers |> List.parallel_map(deploy)
+
+// Returns simple record: {success: [T], failure: [E]}
+results |> List.partition |> match p ->
+  p p.failure.length == 0 ->
+    "All " + p.success.length + " succeeded"
+  
+  p p.success.length == 0 ->
+    "All " + p.failure.length + " failed"
+  
+  p ->
+    "Partial: " + p.success.length + " ok, " + p.failure.length + " failed"
+    rollback(p.success)
+```
+
+**Why this design:**
+- ✅ No special ADT types - just a simple record
+- ✅ Everything is Result - consistent mental model
+- ✅ Guards make logic explicit
+- ✅ Both lists available for processing/rollback
+- ✅ One partition call (efficient)
+
+**Rationale:** Partial success tracking is Ripple's unique feature. Using simple records + guards keeps it composable and doesn't require learning special types.
+
 ### Parentheses: Expression Grouping ONLY
 
 **Ripple uses parentheses `()` exclusively for mathematical expression grouping.**
