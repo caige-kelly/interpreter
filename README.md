@@ -58,7 +58,7 @@ def backup():
 ## The Ripple Way
 
 ```ripple
-// backup.rip - everything in one place
+// backup.rip - everything in one place (Most accurate script)
 
 // fail if any of the system configurations return Err i.e misconfiguration
 !system::schedule "0 3 * * *"
