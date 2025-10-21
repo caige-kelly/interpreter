@@ -63,12 +63,12 @@ def backup():
 !System.trace_to = "s3://logs/ripple/"
 !System.on_failure = Alert.pagerduty("Backup failed")
 !Process.timeout = 600000
-!Process.retries = 3
 
 databases := ["prod", "staging", "dev"]
 
 s3_url := "s3://backups"
 
+!Task.retry backup_db {max_retires: 3}
 backup_db := db ->
   !Process.run "pg_dump " + db
   |> ?Process.run ["gzip", _] or !Process.run ["brotli", _] 
