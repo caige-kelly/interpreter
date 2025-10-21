@@ -7,6 +7,39 @@ const eval = @import("evaluator.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 
+pub const System = struct {
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) System {
+        return System{ .allocator = allocator };
+    }
+
+    pub fn spawnProcess(self: *System, name: []const u8, config: SupervisorConfig) Process {
+        return Process{
+            .system = self,
+            .name = name,
+            .config = config,
+        };
+    }
+};
+
+pub const Process = struct {
+    system: *System,
+    name: []const u8,
+    config: SupervisorConfig,
+
+    pub fn attempt(self: *Process, source: []const u8) !RunAttempt {
+        // Temporarily just call the Supervisor's private function.
+        // We’ll move this body here later in Step 2.
+        var temp_supervisor = Supervisor{
+            .allocator = self.system.allocator,
+            .config = self.config,
+        };
+        return temp_supervisor.attemptRun(source);
+    }
+};
+
+
 // ============================================================================
 // Configuration
 // ============================================================================
@@ -80,11 +113,14 @@ pub const Supervisor = struct {
     // ========================================================================
 
     pub fn run(self: *Supervisor, source: []const u8) !SupervisionResult {
+        var system = System.init(self.allocator);
+        var process = system.spawnProcess("main", self.config);
+
         var total_duration: u64 = 0;
         var attempt: u32 = 1;
 
         while (attempt <= self.config.max_restarts) : (attempt += 1) {
-            var result = try self.attemptRun(source);
+            var result = try process.attempt(source);
             total_duration += result.duration_ms;
 
             // Guard: Success - return immediately
