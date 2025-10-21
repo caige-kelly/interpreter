@@ -60,23 +60,23 @@ def backup():
 ```ripple
 // backup.rip - everything in one place
 
-// fail if any of the system configurations return Err i.e mis configuration
+// fail if any of the system configurations return Err i.e misconfiguration
 !system::schedule "0 3 * * *"
 !system::trace_to  "s3://logs/ripple/"
-!system::on_failure email::configure(email_config_map).send_body("Backups failed")
+!system::on_failure email::Configure{email_config_map}.send_body("Backups failed")
 !process::timeout 600000
 
                                                                     // Literals - Results, auto-unwrap in safe contexts
 databases := ["prod", "staging", "dev"]                             // Result<Ok([...])>
 s3_url    := "s3://backups"                                         // Result<Ok("s3://backups")>
 
-!Task.retry backup_db {max_retires: 3}                              // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
+!Task.retry{max_retires: 3} backup_db                                // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
 backup_db := db ->
   !process::run "pg_dump " + db                                      // ! = return value or panic
   |> ?process::run ["gzip", _] or !process::run ["brotli", _]         // try gzip or brotli must work
   |> !S3::upload "{s3_url}/last_night_backups/{db}.zip" _            // s3 must work
 
-results := databases.parallel_map backup_db {max_concurrent: 3}     // return [Result, Result, Result]
+results := databases.parallelMap{max_concurrent: 3} backup_db        // return [Result, Result, Result]
 
 results.partition [success, failure] |> match p ->                   // Partition results by ok, err into successes and failures
   p.failure.length == 0 ->
