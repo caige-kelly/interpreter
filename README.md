@@ -129,13 +129,12 @@ except Exception as e:
 ```
 // Monadic (@): Explicit error handling
 result := @step1
-  then @step2 _
-  then @step3 _
+  |> @step2 _
+  |>  @step3 _
   |> match ->
        ok(v, _) -> v
        err(msg, meta) ->
-         @Log.error ("Failed at " + meta.stage + ": " + msg)
-         @rollback meta.completed_stages
+         @Log.error ("Failed at " + meta.stage + ": " + msg) then #Result.ok rollback_mech
 
 // Tolerant (#): Errors become none, provide fallback
 config := #File.read "config.json" 
