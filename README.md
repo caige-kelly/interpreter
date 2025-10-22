@@ -364,9 +364,9 @@ match result ->
 
 Without `^`, the assignment would unwrap it and you’d lose access to error details.
 
-### Pipeline Policies
+### Evaluator Policies
 
-The symbols `!`, `?`, and `^` are **pipeline policies** - instructions that tell the evaluator how to process Results:
+The symbols `!`, `?`, and `^` are **evaluator policies** - instructions that tell the evaluator how to process Results:
 
 ```ripple
 // Default: Auto-unwrap in pipelines and assignment
