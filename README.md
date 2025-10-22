@@ -467,6 +467,13 @@ If any step returns an error, the pipeline short-circuits and returns that error
 This is one of Ripple’s most powerful features: **methods automatically operate on the value inside a Result**.
 
 ```ripple
+result := "hello world"
+  |> world -> word.uppercase.split(" ") // Unwraps input, returns Result
+  |> map word -> word + "!"             // Unwraps input, returns Result
+  |> list::join ", "                    // Final Result
+```
+
+```ripple
 x := ["hello", "world"]           // ok(["hello", "world"], meta)
 value := x.get(0).uppercase       // ok("HELLO", meta)
 
