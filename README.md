@@ -73,13 +73,17 @@ s3_url := "s3://backups"
 
 // Retry policy applied to backup_db function
 !task::retry {max_retries: 3, sleep: 30s} backup_db
+
 backup_db := db ->
-  process::run ["pg_dump", db]
-  |> ?process::run ["gzip", db] or process::run ["brotli", db]
-  |> ^s3::upload "{s3_url}/last_night_backups/{db}.zip" db //returns Result instead of letting := unwrap
+  // ^ keeps Results wrapped so errors propagate up
+  ^process::run ["pg_dump", db]
+    // Try gzip, if that fails try brotli (one must succeed)
+    |> ^process::run ["gzip", db] or ^process::run ["brotli", db]
+    // Upload to S3 (must succeed)
+    |> ^s3::upload "{s3_url}/last_night_backups/{db}.zip" db
 
 // Parallel execution, returns [Result, Result, Result]
-results := ^databases.parallel_map backup_db, {max_concurrent: 3}
+results := databases.parallel_map backup_db, {max_concurrent: 3}
 
 // Partition into successes and failures, then match on outcomes
 results |> list::partition [failure, success] |> match p ->
@@ -421,7 +425,22 @@ divide := a, b ->
 x := divide 10, 2       // x = 5 (unwrapped)
 x := ^divide 10, 0      // x = err("division by zero", meta) (wrapped)
 x := !divide 10, 2      // x = 5 or panic
-x := ?divide 10, 2 or 0 // x = 5 or 0 
+x := ?divide 10, 2 or 0 // x = 5 or 0 if error
+```
+
+### Pipelines
+
+Data flows left-to-right through transformations. Pipelines auto-unwrap Results:
+
+```ripple
+result := "hello world"
+  |> string::uppercase      // Unwraps input, returns Result
+  |> string::split " "      // Unwraps input, returns Result
+  |> map word -> word + "!" // Unwraps input, returns Result
+  |> list::join ", "        // Final Result
+```
+
+If any step returns an error, the pipeline short-circuits and returns that error.
 
 ### Method Chaining Through Results
 
@@ -490,36 +509,6 @@ match result ->
 ```
 
 This transparent Result mapping means you can write clean, fluent chains without manual error checking at every step. Errors automatically propagate, and you handle them once at the end (or let them propagate further up the call chain).
-
-### Pipelines
-
-Data flows left-to-right through transformations. Pipelines auto-unwrap Results:
-
-```ripple
-result := "hello world"
-  |> string::uppercase      // Unwraps input, returns Result
-  |> string::split " "      // Unwraps input, returns Result
-  |> map word -> word + "!" // Unwraps input, returns Result
-  |> list::join ", "        // Final Result
-```
-
-If any step returns an error, the pipeline short-circuits and returns that error.
-
-### Method Chaining Through Results
-
-Methods automatically operate on the value inside a Result:
-
-```ripple
-x := ["hello", "world"]           // ok(["hello", "world"], meta)
-value := x.get(0).uppercase       // ok("HELLO", meta)
-
-// If any step fails, the chain short-circuits:
-y := []                           // ok([], meta)
-value := y.get(0).uppercase       // err("index out of bounds", meta)
-                                  // .uppercase never runs
-```
-
-This is automatic error propagation - methods map over the Result container.
 
 ### Pattern Matching
 
