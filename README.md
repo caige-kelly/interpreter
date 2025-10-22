@@ -73,17 +73,13 @@ s3_url := "s3://backups"
 
 // Retry policy applied to backup_db function
 !task::retry {max_retries: 3, sleep: 30s} backup_db
-
 backup_db := db ->
-  // ^ keeps Results wrapped so errors propagate up
-  ^process::run ["pg_dump", db]
-    // Try gzip, if that fails try brotli (one must succeed)
-    |> ^process::run ["gzip", db] or ^process::run ["brotli", db]
-    // Upload to S3 (must succeed)
-    |> ^s3::upload "{s3_url}/last_night_backups/{db}.zip" db
+  process::run ["pg_dump", db]
+  |> ?process::run ["gzip", db] or process::run ["brotli", db]
+  |> ^s3::upload "{s3_url}/last_night_backups/{db}.zip" db //returns Result instead of letting := unwrap
 
 // Parallel execution, returns [Result, Result, Result]
-results := databases.parallel_map backup_db, {max_concurrent: 3}
+results := ^databases.parallel_map backup_db, {max_concurrent: 3}
 
 // Partition into successes and failures, then match on outcomes
 results |> list::partition [failure, success] |> match p ->
