@@ -61,7 +61,12 @@ And none of them talk to each other.
 
 ```ripple
 // backup.rip - everything in one place
-// System configuration - all critical, must succeed
+
+@scriptdoc """
+Back up is designed to run every night at 3:00 am
+Logs are traced to s3://logs/ripple/
+The Ops distro is emailed on failure
+"""
 !system::schedule "0 3 * * *"
 !system::trace_to "s3://logs/ripple/"
 !system::on_failure email::configure(?email_config_map).send_body("Backups failed")
@@ -71,9 +76,18 @@ And none of them talk to each other.
 databases := ["prod", "staging", "dev"]
 s3_url := "s3://backups"
 
-// Retry policy applied to backup_db function
+@doc """
+  section: Backup Retries
+  Retry the back up process 3 times if there is failure.
+  Sleep for 30 seconds inbetween incase there is a network issue or something odd happening
+"""
 !task::retry {max_retries: 3, sleep: 30s} backup_db
 
+@doc """
+  section: Collect Backups
+  Some older AMIs we still use for legacy have gzip.
+  Newer AMIs, most systems, should have brotli now.
+"""
 backup_db := db ->
   process::run ["pg_dump", db]
     // Try gzip, if that fails try brotli 
@@ -84,7 +98,11 @@ backup_db := db ->
 // Parallel execution, returns [Result, Result, Result]
 results := ^databases.parallel_map backup_db, {max_concurrent: 3}
 
-// Partition into successes and failures, then match on outcomes
+@doc """
+  section: Parse Results
+  Partition results into successes and failures, then match on outcomes
+  TODO: need to think of better error handling
+"""
 results |> list::partition [failure, success] |> match p ->
   p.failure.length == 0 ->
     io::stdout "✓ All " + p.success.length + " databases backed up"
