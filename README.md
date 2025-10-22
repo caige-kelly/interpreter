@@ -870,7 +870,7 @@ See `docs/handoff.md` for architecture details and current implementation status
 
 ## License
 
-[To be determined]
+MIT
 
 -----
 
