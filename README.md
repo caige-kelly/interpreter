@@ -421,8 +421,75 @@ divide := a, b ->
 x := divide 10, 2       // x = 5 (unwrapped)
 x := ^divide 10, 0      // x = err("division by zero", meta) (wrapped)
 x := !divide 10, 2      // x = 5 or panic
-x := ?divide 10, 2 or 0 // x = 5 or 0 if error
+x := ?divide 10, 2 or 0 // x = 5 or 0 
+
+### Method Chaining Through Results
+
+This is one of Ripple’s most powerful features: **methods automatically operate on the value inside a Result**.
+
+```ripple
+x := ["hello", "world"]           // ok(["hello", "world"], meta)
+value := x.get(0).uppercase       // ok("HELLO", meta)
+
+// If any step fails, the chain short-circuits:
+y := []                           // ok([], meta)
+value := y.get(0).uppercase       // err("index out of bounds", meta)
+                                  // .uppercase never runs
 ```
+
+**How it works:**
+
+When you call a method on a Result, the method operates on the *inner value* while preserving the Result wrapper:
+
+```ripple
+// Behind the scenes:
+x = ok(["hello", "world"], meta)
+
+x.get(0)
+  // Check: Is x ok or err?
+  // ok -> call get(0) on ["hello", "world"] -> "hello"
+  // Wrap result -> ok("hello", meta)
+
+x.get(0).uppercase
+  // Previous result: ok("hello", meta)
+  // Check: Is it ok or err?
+  // ok -> call uppercase on "hello" -> "HELLO"
+  // Wrap result -> ok("HELLO", meta)
+```
+
+**Error propagation:**
+
+If any step in the chain returns an error, subsequent methods are skipped:
+
+```ripple
+result := user_data
+  .get("users")              // ok([...]) or err("key not found")
+  .find(u -> u.id == 5)      // ok(user) or err("not found") or SKIPPED if previous err
+  .get("email")              // ok(email) or err or SKIPPED
+  .lowercase                 // ok(lowercase_email) or err or SKIPPED
+  .send_notification         // ok(()) or err or SKIPPED
+
+// result is either:
+// - ok(()) if everything succeeded
+// - err(...) from the first operation that failed
+```
+
+**The special case:**
+
+There is one special case to be aware of: when working with collections, traits need to “look through” the Result and operate on the inner value, then re-wrap the result (or keep the error if it’s already an error).
+
+```ripple
+x := ["this", "that"]
+result := ^x.get(0)           // Keep Result wrapped
+// result = ok("this", meta)
+
+// Now you can inspect both success and error metadata:
+match result ->
+  ok(val, meta) -> log "Got " + val + " in " + meta.duration + "ms"
+  err(e, meta) -> log "Failed after " + meta.retries + " retries"
+```
+
+This transparent Result mapping means you can write clean, fluent chains without manual error checking at every step. Errors automatically propagate, and you handle them once at the end (or let them propagate further up the call chain).
 
 ### Pipelines
 
