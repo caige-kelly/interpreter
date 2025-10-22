@@ -317,6 +317,8 @@ rvm restart backup.rip
 
 ### Everything is a Result
 
+For cases where the piped value is not the first argument, an anonymous function must be used. 
+
 This is the foundation of Ripple’s design. Every expression returns a `Result<T, E>`:
 
 ```ripple
