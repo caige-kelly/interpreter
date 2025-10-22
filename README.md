@@ -61,8 +61,7 @@ And none of them talk to each other.
 
 ```ripple
 // backup.rip - everything in one place
-
-@scriptdoc """
+process::doc::header """
 Back up is designed to run every night at 3:00 am
 Logs are traced to s3://logs/ripple/
 The Ops distro is emailed on failure
@@ -76,18 +75,14 @@ The Ops distro is emailed on failure
 databases := ["prod", "staging", "dev"]
 s3_url := "s3://backups"
 
-@doc """
-  section: Backup Retries
-  Retry the back up process 3 times if there is failure.
+process:doc::section "Backup Procedure """
+  Retry the backups 3 times if there is failure.
   Sleep for 30 seconds inbetween incase there is a network issue or something odd happening
-"""
-!task::retry {max_retries: 3, sleep: 30s} backup_db
 
-@doc """
-  section: Collect Backups
   Some older AMIs we still use for legacy have gzip.
   Newer AMIs, most systems, should have brotli now.
 """
+!task::retry {max_retries: 3, sleep: 30s}
 backup_db := db ->
   process::run ["pg_dump", db]
     // Try gzip, if that fails try brotli 
@@ -98,8 +93,7 @@ backup_db := db ->
 // Parallel execution, returns [Result, Result, Result]
 results := ^databases.parallel_map backup_db, {max_concurrent: 3}
 
-@doc """
-  section: Parse Results
+process::doc::section "Parse Results" """
   Partition results into successes and failures, then match on outcomes
   TODO: need to think of better error handling
 """
