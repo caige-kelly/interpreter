@@ -89,7 +89,10 @@ backup_db := db ->
 
   // Equivalent 
   dump := process::run ["pg_dump", db]
-  comp := process::run ["gzip", dump, ">", "backup.gz"] or process::run ["brotli", dump, ">", "backup.br"]
+  comp :=
+    process::run ["gzip", dump, ">", "backup.gz"]
+    or
+    process::run ["brotli", dump, ">", "backup.br"]
   s3::upload "{s3_url}/last_night_backups/{db}.zip" comp
 
 // Parallel execution, returns [Result, Result, Result]
