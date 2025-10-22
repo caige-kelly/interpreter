@@ -1,18 +1,18 @@
 # Ripple
 
-> ⚠️ **Vision Document**: This README describes Ripple's intended design and architecture. 
-> See [`docs/handoff.md`](docs/handoff.md) for current implementation status.
-> 
-> **Current Status**: Phase 1 complete (lexer, parser, evaluator - 56 tests passing). 
-> Phase 2 in progress (functions, collections, pipelines).
+⚠️ **Vision Document**: This README describes Ripple’s intended design and architecture. See [`docs/handoff.md`](docs/handoff.md) for current implementation status.
 
-**Operational scripts that don't lie about failures**
+**Current Status**: Phase 1 complete (lexer, parser, evaluator - 56 tests passing). Phase 2 in progress (functions, collections, pipelines).
+
+## Operational scripts that don’t lie about failures
 
 Stop duct-taping together bash, Python, cron, systemd, and logging just to run reliable automation. Ripple is a functional, pipeline-oriented language designed specifically for operational scripts—with built-in scheduling, supervision, and observability.
 
+-----
+
 ## The Problem
 
-Every production system has operational scripts: database backups at 3am, multi-stage build pipelines, release automation, cleanup jobs, health checks. And they're all held together with duct tape:
+Every production system has operational scripts: database backups at 3am, multi-stage build pipelines, release automation, cleanup jobs, health checks. And they’re all held together with duct tape:
 
 ```bash
 #!/bin/bash
@@ -31,7 +31,6 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 def backup():
     databases = ['prod', 'staging', 'dev']
     failed = []
-    
     for db in databases:
         try:
             subprocess.run(['pg_dump', db], check=True)
@@ -46,48 +45,54 @@ def backup():
         send_alert(f"Backup failed: {failed}")
 ```
 
-**You need 5 separate tools:**
-1. Cron - scheduling
-2. Systemd/supervisor - process management
-3. Python/bash - the actual logic
-4. Logging libraries - observability
-5. Monitoring/alerting - know when things break
+You need 5 separate tools:
 
-**And none of them talk to each other.**
+- **Cron** - scheduling
+- **Systemd/supervisor** - process management
+- **Python/bash** - the actual logic
+- **Logging libraries** - observability
+- **Monitoring/alerting** - know when things break
 
-## The Ripple Way
+And none of them talk to each other.
+
+-----
+
+## The Solution
 
 ```ripple
-// backup.rip - everything in one place (Most accurate script)
-
-// fail if any of the system configurations return Err i.e misconfiguration
+// backup.rip - everything in one place
+// System configuration - all critical, must succeed
 !system::schedule "0 3 * * *"
-!system::trace_to  "s3://logs/ripple/"
-!system::on_failure email::Configure{?email_config_map}.send_body("Backups failed")
+!system::trace_to "s3://logs/ripple/"
+!system::on_failure email::configure(?email_config_map).send_body("Backups failed")
 !process::timeout 600000
 
-                                                                    // Literals - Results, auto-unwrap in safe contexts
-databases := ["prod", "staging", "dev"]                             // assignment auto unwraps right hand side [...]
-s3_url    := "s3://backups"                                         // assignment auto unwraps "s3://backups"
+// Variables - assignment auto-unwraps Results
+databases := ["prod", "staging", "dev"]
+s3_url := "s3://backups"
 
-!task::Retry{max_retires: 3, sleep: 30s} backup_db                   // retry backup_db up to 3 times if there is an Err returned, could be top level or next to where it "works"
-                                                                    // Not sure yet but system, process, task will probabably be preprocessed and handled by the VM, should always be ! unless there's a good reason not
-backup_db := ?db ->
-  ^process::run ["pg_dump ", db]                                     // ^ propagate errors up 
-  |> ?process::run ["gzip", db] or ^process::run ["brotli", db]        // try gzip or brotli must work
-  |> ^S3::upload "{s3_url}/last_night_backups/{db}.zip" db           // s3 must work
+// Retry policy applied to backup_db function
+!task::retry {max_retries: 3, sleep: 30s} backup_db
 
-results := databases.parallelMap{max_concurrent: 3} backup_db        // return [Result, Result, Result]
+backup_db := db ->
+  // ^ keeps Results wrapped so errors propagate up
+  ^process::run ["pg_dump", db]
+    // Try gzip, if that fails try brotli (one must succeed)
+    |> ^process::run ["gzip", db] or ^process::run ["brotli", db]
+    // Upload to S3 (must succeed)
+    |> ^s3::upload "{s3_url}/last_night_backups/{db}.zip" db
 
-results.partition {ok: success, err: failure} |> match p ->                   // Partition results by ok, err into successes and failures
+// Parallel execution, returns [Result, Result, Result]
+results := databases.parallel_map backup_db, {max_concurrent: 3}
+
+// Partition into successes and failures, then match on outcomes
+results |> list::partition [failure, success] |> match p ->
   p.failure.length == 0 ->
-    io::stdout("✓ All " + p.success.length + " databases backed up")
-  
+    io::stdout "✓ All " + p.success.length + " databases backed up"
   p.success.length == 0 ->
-    sys::exit(1)
-  
+    sys::exit 1
   any ->
-    p.failure |> map p -> io::stderr "Failed: " + p
+    p.failure |> map f -> io::stderr "Failed: " + f
 ```
 
 ```bash
@@ -95,28 +100,31 @@ results.partition {ok: success, err: failure} |> match p ->                   //
 rvm run backup.rip
 
 # Built-in management (planned)
-rvm list                 # See all running scripts
-rvm logs backup.rip      # View logs  
-rvm trace backup.rip     # See execution trace
-rvm restart backup.rip   # Graceful restart
+rvm list              # See all running scripts
+rvm logs backup.rip   # View logs
+rvm trace backup.rip  # See execution trace
+rvm restart backup.rip # Graceful restart
 ```
 
-## What Makes Ripple Different
+-----
 
-### 1. Runtime Configuration, Not Just Code
+## Why Ripple?
 
-**Other languages:** You write the script, you figure out how to run it  
+### 1. Built-in Runtime Management
+
+**Other languages:** You write the script, you figure out how to run it
+
 **Ripple:** Configure the runtime once, it handles execution
 
 ```ripple
-System.schedule = "0 3 * * *"           // Built-in cron
-System.max_memory = "512MB"             // Resource limits
-System.trace_to = "jaeger://traces"     // Distributed tracing
-System.on_failure = Alert.slack         // Failure hooks
+System.schedule = "0 3 * * *"      // Built-in cron
+System.max_memory = "512MB"        // Resource limits
+System.trace_to = "jaeger://traces" // Distributed tracing
+System.on_failure = Alert.slack   // Failure hooks
 
-Process.timeout = 600000                // Global timeout
-Process.retries = 3                     // Retry failed operations
-Process.parallel_limit = 5              // Max concurrency
+Process.timeout = 600000           // Global timeout
+Process.retries = 3                // Retry failed operations
+Process.parallel_limit = 5         // Max concurrency
 
 // Your script - runtime handles the rest
 do_work()
@@ -124,9 +132,10 @@ do_work()
 
 No more writing timeout wrappers, implementing retry logic, or configuring process supervisors.
 
-### 2. Errors Flow Through Pipelines
+### 2. Errors Flow Inline With Your Logic
 
 **Python:** Exceptions separate error handling from logic
+
 ```python
 try:
     result1 = step1()
@@ -138,34 +147,35 @@ except Exception as e:
     rollback_somehow()
 ```
 
-**Ripple:** Errors flow inline with your logic
+**Ripple:** Errors are values that flow through your code
+
 ```ripple
-// Default: Returns Result, handle explicitly
-result := ^step1.unwrap_or rollback1                  // unwrap Result, on err execute rollback1 and with ^ propagate error up pipeline
-  |> ^step2.unwrap_or rollback2
-  |> ^step3.unwrap_or rollback3
+result := step1
+  |> step2
+  |> step3
 
-match result {
-  Ok(v) -> process(v)
-  Err(e, meta) -> io::stdout "encountered error: " + e + "...rolled back" then sys::exit(1)
-}
-
-// ? = Optional: Errors become none, provide fallback
-config := ?file::read("config.json") or default_config
-
-// ! = Critical: Must succeed or crash
-critical_config := !file::read("required.json")
+match result ->
+  ok(v) -> process v
+  err(e) -> handle_error e
 ```
 
-**Choose your semantics at the call site:**
-- (no symbol) = Returns `Result<V, E>`, handle explicitly
-- `?` = Optional: Returns `value | none`, use `or` for fallback
-- `!` = Critical: Unwraps or crashes, for unrecoverable operations
-- `^` = Propagate: Unwrap and return Err up the call chain
+Choose your error semantics at the call site:
 
-### 3. Expression-Level Observability Built In
+- **(default)** = Returns `Result<T, E>`, handle explicitly
+- **`?`** = Optional: Returns `value | none`, use `or` for fallback
+- **`!`** = Critical: Must succeed or crash
+- **`^`** = Keep wrapped: Preserve Result for inspection
+
+```ripple
+config := ?file::read "config.json" or default_config  // Optional
+critical := !file::read "required.json"                // Must succeed
+result := ^database_query                              // Keep Result for matching
+```
+
+### 3. Automatic Observability
 
 **Python:** Add logging manually everywhere
+
 ```python
 logger.info("Starting step 1")
 result1 = step1()
@@ -174,11 +184,12 @@ logger.info(f"Step 1 done in {duration}ms")
 ```
 
 **Ripple:** Every expression is automatically traced
+
 ```ripple
 // Just write your logic
-build_artifact("linux")
+build_artifact "linux"
   |> sign
-  |> upload_to("releases/")
+  |> upload_to "releases/"
 ```
 
 ```bash
@@ -186,26 +197,28 @@ build_artifact("linux")
 rvm trace build.rip
 
 # Output:
-# [12:34:01.234] Line 5: build_artifact "linux" 
+# [12:34:01.234] Line 5: build_artifact "linux"
 #   -> ok("app-v1.0-linux", {duration: 2341ms, memory: 234MB})
-# [12:34:03.575] Line 6: sign 
+# [12:34:03.575] Line 6: sign
 #   -> ok("app-v1.0-linux.sig", {duration: 89ms})
 # [12:34:03.664] Line 7: upload_to
 #   -> err("network timeout", {duration: 1205ms, retries: 3})
 ```
 
 Export traces anywhere:
+
 ```ripple
-#System.trace_to = "jaeger://localhost:6831"
-#System.trace_to = "datadog://api-key"
-#System.trace_to = "file:///var/log/ripple/"
+System.trace_to = "jaeger://localhost:6831"
+System.trace_to = "datadog://api-key"
+System.trace_to = "file:///var/log/ripple/"
 ```
 
-### 4. Partial Success Is Explicit
+### 4. Partial Success is First-Class
 
-**The killer feature for multi-stage operations.**
+The killer feature for multi-stage operations.
 
 **Python:** Track partial success manually
+
 ```python
 succeeded = []
 failed = []
@@ -224,45 +237,45 @@ if failed:
 ```
 
 **Ripple:** Built into list operations
+
 ```ripple
 servers := ["web-1", "web-2", "web-3"]
+results := servers.parallel_map deploy, {max_concurrent: 3}
 
-results := servers.parallel_map(deploy, max_concurrent: 3)
-
-results.partition [failure, success] |> match result ->
-  result.failure.length == 0 ->
-    io::stdout("✓ Deployed to all " + p.success.length + " servers")
-  
-  result.success.length == 0 ->
-    !PagerDuty::alert("✗ Deploy completely failed")
-    !io::exit(1)
-  
+results |> list::partition [failure, success] |> match p ->
+  p.failure.length == 0 ->
+    io::stdout "✓ Deployed to all " + p.success.length + " servers"
+  p.success.length == 0 ->
+    !pagerduty::alert "✗ Deploy completely failed"
+    !sys::exit 1
   any ->
-    !Slack::alert("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
+    !slack::alert "⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed"
     rollback p.success  // Rollback what succeeded
 ```
 
-**How it works:**
+How it works:
+
 - All operations return `Result<T, E>`
 - `List.partition` separates successes from failures
 - Match with guards checks all three outcomes
 - Both lists available for processing/rollback
 
-### 5. Process Management Built In
+### 5. One CLI for Everything
 
 **Other languages:** Figure out systemd/supervisor/cron yourself
 
 **Ripple:** One CLI for everything (planned)
+
 ```bash
-rvm run my_script.rip    # Run as daemon with supervision
-rvm exec my_script.rip   # One-off execution
+rvm run my_script.rip   # Run as daemon with supervision
+rvm exec my_script.rip  # One-off execution
 
 # See what's running
 rvm list
-# NAME              STATUS    LAST RUN              NEXT RUN
-# backup.rip        running   2024-10-20 03:00:00   2024-10-21 03:00:00
-# deploy.rip        idle      2024-10-19 14:32:15   manual
-# cleanup.rip       failed    2024-10-20 01:00:00   2024-10-21 01:00:00
+# NAME          STATUS   LAST RUN              NEXT RUN
+# backup.rip    running  2024-10-20 03:00:00   2024-10-21 03:00:00
+# deploy.rip    idle     2024-10-19 14:32:15   manual
+# cleanup.rip   failed   2024-10-20 01:00:00   2024-10-21 01:00:00
 
 # Debug and manage
 rvm logs backup.rip --follow
@@ -270,66 +283,263 @@ rvm trace backup.rip --expression 23
 rvm restart backup.rip
 ```
 
-## Language Design
+-----
 
-### Core Principles
+## Core Design Principles
 
 - **No if/else** - Pattern matching via `match` expressions
-- **Explicit error handling** - Everything returns Result by default
-- **Immutable** - No variable shadowing, use pipelines
+- **Everything returns Result** - Explicit, traceable error handling
+- **Immutable** - No variable shadowing, use pipelines for transformation
 - **Pipelines first** - Data flows through transformations
 - **Built-in observability** - Every expression traced automatically
 
-### Quick Tour
+-----
 
-**Variables & Functions**
+## Language Guide
+
+### Everything is a Result
+
+This is the foundation of Ripple’s design. Every expression returns a `Result<T, E>`:
+
+```ripple
+5                // ok(5, metadata)
+true             // ok(true, metadata)
+"hello"          // ok("hello", metadata)
+[]               // ok([], metadata)
+add 2, 3         // ok(5, metadata)
+divide 10, 0     // err("division by zero", metadata)
+```
+
+This unified model means:
+
+- Errors are always tracked
+- Every operation is automatically traced
+- Success and failure flow through the same pipeline
+
+### Assignment Unwraps by Default
+
+For ergonomics, the assignment operator `:=` automatically unwraps Results:
+
+```ripple
+x := 5           // Assignment unwraps: x = 5 (not ok(5, meta))
+y := x + 3       // Just works: y = 8
+name := "Alice"  // name = "Alice"
+```
+
+This gives you clean, readable code without explicit unwrapping everywhere.
+
+### The `^` Operator: Keep It Wrapped
+
+Use `^` when you need to preserve the Result for inspection:
+
+```ripple
+result := ^database_query  // result = ok(...) or err(...)
+
+match result ->
+  ok(data, meta) -> 
+    io::stdout "Query took " + meta.duration + "ms"
+  err(e, meta) -> 
+    alert "Failed after " + meta.retries + " retries: " + e
+```
+
+Without `^`, the assignment would unwrap it and you’d lose access to error details.
+
+### Pipeline Policies
+
+The symbols `!`, `?`, and `^` are **pipeline policies** - instructions that tell the evaluator how to process Results:
+
+```ripple
+// Default: Auto-unwrap in pipelines and assignment
+x := operation         // Unwraps to value
+operation |> process   // Unwraps for next step
+
+// ^ = Keep wrapped (don't auto-unwrap)
+x := ^operation        // x = Result<T, E>
+^operation |> match -> // Match on Result structure
+  ok(v) -> ...
+  err(e) -> ...
+
+// ! = Unwrap or panic (for critical operations)
+x := !operation        // Panic if err
+!operation |> process  // Pipeline panics on err
+
+// ? = Unwrap or none (for optional operations)
+x := ?operation or default   // Use default if err
+?operation |> process        // Skip processing if err
+```
+
+### Policy Application Rules
+
+Policies follow natural binding (right-to-left, closest to the Result):
+
+```ripple
+✅ x := operation       // Unwrap (default)
+✅ x := ^operation      // Keep wrapped
+✅ x := !operation      // Unwrap or panic
+✅ x := ?operation      // Unwrap or none
+
+❌ x := ?!operation     // Error: Multiple policies conflict
+❌ x := ^?operation     // Error: Can't keep wrapped AND make optional
+```
+
+**Only one policy per Result.** Multiple policies are a compile error.
+
+### Working with Wrapped Results
+
+When you use `^` to keep a Result wrapped, you must explicitly unwrap it:
+
+```ripple
+result := ^get_data
+
+// Option 1: Match on it
+match result ->
+  ok(v) -> process v
+  err(e) -> handle e
+
+// Option 2: Explicit unwrap with policy
+value := !result       // Panic if err
+value := ?result or default  // Use default if err
+value := result.unwrap       // Explicit unwrap method
+
+// Option 3: Use in pipeline (auto-unwraps)
+result |> process      // Unwraps for pipeline
+```
+
+### Variables & Functions
+
 ```ripple
 x := 42
 add := a, b -> a + b
-result := add 10 32  // 42
+result := add 10, 32   // 42
 ```
 
-**Pipelines**
+Functions automatically return Results:
+
+```ripple
+divide := a, b ->
+  match b ->
+    0 -> err "division by zero"
+    _ -> ok(a / b)
+
+// At call site, choose your policy:
+x := divide 10, 2       // x = 5 (unwrapped)
+x := ^divide 10, 0      // x = err("division by zero", meta) (wrapped)
+x := !divide 10, 2      // x = 5 or panic
+x := ?divide 10, 2 or 0 // x = 5 or 0 if error
+```
+
+### Pipelines
+
+Data flows left-to-right through transformations. Pipelines auto-unwrap Results:
+
 ```ripple
 result := "hello world"
-  |> string::uppercase
-  |> string::split(" ")
-  |> map word -> word + "!"
-  |> !result::unwrap             // !_.unwrap would probably work? but pretty ugly. 
+  |> string::uppercase      // Unwraps input, returns Result
+  |> string::split " "      // Unwraps input, returns Result
+  |> map word -> word + "!" // Unwraps input, returns Result
+  |> list::join ", "        // Final Result
 ```
 
-**Pattern Matching** (No `if` keyword!)
+If any step returns an error, the pipeline short-circuits and returns that error.
+
+### Method Chaining Through Results
+
+Methods automatically operate on the value inside a Result:
+
 ```ripple
-temperature |> match t ->            // Automatic unwrap by pipeline
-  60 <= t <= 80 -> "comfortable"     // Chained comparison
-  t < 60 -> "cold"
-  t -> "hot"                         // Catch-all
+x := ["hello", "world"]           // ok(["hello", "world"], meta)
+value := x.get(0).uppercase       // ok("HELLO", meta)
 
-// Result matching
-match result ->                      // match pattern to keep Result object in tact
-  ok(data, meta) ->
-    io::stdout("Success in " + meta.duration + "ms")
-  err(msg, meta) ->
-    Slack::post("Error: " + msg)
+// If any step fails, the chain short-circuits:
+y := []                           // ok([], meta)
+value := y.get(0).uppercase       // err("index out of bounds", meta)
+                                  // .uppercase never runs
 ```
 
-**Error Handling**
+This is automatic error propagation - methods map over the Result container.
+
+### Pattern Matching
+
+Match is a pure expression that returns whatever its matched arm returns:
+
 ```ripple
-// Returns Result by default
-data := match Net::get url ->
-  ok(body, _) -> body
-  err(e, _) -> panic("Failed: " + e)
+// Match returns a value
+message := match temperature ->
+  t < 32 -> "freezing"
+  32 <= t < 60 -> "cold"
+  60 <= t <= 80 -> "comfortable"
+  _ -> "hot"
 
-// Optional with ?
-avatar := ?net::get(avatar_url) or default_avatar
+// Match without assignment still executes (and is traced)
+match temperature ->
+  t < 32 -> alert "Freezing!"
+  t > 100 -> alert "Dangerously hot!"
+  _ -> log "Temperature normal"
 
-// Critical with !
-config := !file::read("critical.json")  // Crashes if missing
+// Match on Results
+match ^database_query ->
+  ok(rows, meta) -> 
+    log "Retrieved " + rows.length + " rows in " + meta.duration + "ms"
+  err(e, meta) -> 
+    alert "Query failed: " + e
 ```
 
-## Real-World Examples
+### Bare Expressions for Side Effects
 
-### Multi-Platform Release Build
+Since everything is traced, you don’t need to capture results unless you’re using them:
+
+```ripple
+// Just execute for side effect - automatically traced
+log "System starting"
+check_health
+database_backup
+send_notification
+
+// Capture when you need the value
+status := check_health
+message := "Status: " + status
+```
+
+The trace shows everything that happened:
+
+```bash
+rvm trace my_script.rip
+
+# [12:34:01] Line 2: log "System starting"
+#   -> ok((), {duration: 1.2ms})
+# [12:34:01] Line 3: check_health
+#   -> ok("healthy", {duration: 234ms})
+# [12:34:02] Line 4: database_backup
+#   -> err("connection timeout", {duration: 5000ms, retries: 3})
+# [12:34:02] Line 5: send_notification
+#   -> ok((), {duration: 45ms})
+```
+
+### Error Handling Patterns
+
+```ripple
+// Pattern 1: Explicit matching
+result := ^fetch_data
+match result ->
+  ok(data) -> process data
+  err(e) -> log "Failed: " + e
+
+// Pattern 2: Optional with fallback
+config := ?file::read "config.json" or default_config
+
+// Pattern 3: Critical operations
+api_key := !file::read "api_key.txt"  // Panic if missing
+
+// Pattern 4: Pipeline with error handling
+^fetch_data
+  |> match r ->
+    ok(data) -> data |> transform |> save
+    err(e) -> log "Fetch failed: " + e
+```
+
+-----
+
+## Example: Multi-Platform Build
 
 ```ripple
 targets := [
@@ -339,38 +549,40 @@ targets := [
 ]
 
 build := target ->
-  !process::run("cargo build --release --target " + target.arch + "-" + target.os)
+  !process::run "cargo build --release --target " + target.arch + "-" + target.os
     |> sign
     |> upload_to "releases/"
 
-results := targets 
+results := targets
   |> list::parallel_map build, {max_concurrent: 4}
 
-results |> list::partition [succeeded, failure] |> match p ->
+results |> list::partition [failure, success] |> match p ->
   p.failure.length == 0 ->
-    io::stdout("✓ All " + p.success.length + " builds succeeded")
-    GitHub::create_release("v1.0.0", p.success)
-  
+    io::stdout "✓ All " + p.success.length + " builds succeeded"
+    github::create_release "v1.0.0", p.success
+    
   p.success.length == 0 ->
-    !alert::pagerduty("✗ Build completely failed")
-    !io::exit(1)
-  
-  p ->
-    IO.stderr("⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed")
-    Alert.slack("Build partially failed. Succeeded: " + p.success)
+    !pagerduty::alert "✗ Build completely failed"
+    !sys::exit 1
+    
+  any ->
+    io::stderr "⚠ Partial: " + p.success.length + " ok, " + p.failure.length + " failed"
+    slack::alert "Build partially failed. Succeeded: " + p.success
 ```
 
-### Health Check with Retry
+-----
+
+## Example: Health Check Monitor
 
 ```ripple
-!System.schedule = "*/5 * * * *"  // Every 5 minutes
-!System.trace_to = "datadog://api-key"
-!Process.timeout = 30000
+!system::schedule "*/5 * * * *"  // Every 5 minutes
+!system::trace_to "datadog://api-key"
+!process::timeout 30000
 
 check_health := service ->
-   match net::get service::url ->
-    ok(resp, _) resp.status == 200 && resp.body.status == "healthy" ->
-      ok(service.name)
+  match net::get service.url ->
+    ok(resp, _) when resp.status == 200 && resp.body.status == "healthy" ->
+      ok service.name
     ok(_, _) ->
       err(service.name + " unhealthy")
     err(e, _) ->
@@ -381,139 +593,162 @@ services := [
   {name: "worker", url: "https://worker.example.com/health"}
 ]
 
-results := services.parallel_map(check_health, max_concurrent: 3)
+results := services.parallel_map check_health, {max_concurrent: 3}
 
 results |> list::partition [failure, success] |> match p ->
   p.failure.length == 0 ->
-    Metrics.gauge("health.all_up", 1)
-  
-  p ->
-    p.failur |> map name ->
-      Metrics.gauge "health.{name}" 0
-      Alert.slack "⚠️ " + name + " is unhealthy"
+    metrics::gauge "health.all_up", 1
+    
+  any ->
+    p.failure |> map name ->
+      metrics::gauge "health.{name}", 0
+      slack::alert "⚠️ " + name + " is unhealthy"
 ```
 
-## Use Ripple For
+-----
 
-✅ Build & release automation  
-✅ Operational tasks (backups, cleanup, health checks)  
-✅ CI/CD pipelines  
-✅ Scheduled jobs (replace cron)  
-✅ Developer tooling orchestration  
-✅ Infrastructure automation  
+## Use Cases
 
-## Don't Use Ripple For
+✅ **Perfect for:**
 
-❌ Web applications (use Rust, Go, Node)  
-❌ Data science (use Python)  
-❌ Systems programming (use Rust, C++)  
-❌ Mobile apps (use Swift, Kotlin)
+- Build & release automation
+- Operational tasks (backups, cleanup, health checks)
+- CI/CD pipelines
+- Scheduled jobs (replace cron)
+- Developer tooling orchestration
+- Infrastructure automation
 
-**Ripple is for the operational glue code in your repos.**
+❌ **Not for:**
+
+- Web applications (use Rust, Go, Node)
+- Data science (use Python)
+- Systems programming (use Rust, C++)
+- Mobile apps (use Swift, Kotlin)
+
+Ripple is for the **operational glue code** in your repos.
+
+-----
 
 ## Comparison
 
-| Feature | Bash | Python | Airflow | Ripple |
-|---------|------|--------|---------|--------|
-| **Scheduling** | cron | APScheduler | ✓ Built-in | ✓ Built-in |
-| **Process Mgmt** | systemd | supervisor | ✓ Built-in | ✓ Built-in |
-| **Error Handling** | `set -e` | try/except | Task retries | ✓ Result type |
-| **Observability** | Manual logs | Manual logs | UI only | ✓ Auto-trace |
-| **Partial Success** | ❌ | Manual tracking | Task-level | ✓ List.partition |
-| **Parallelism** | `&` and hope | ThreadPoolExecutor | ✓ | ✓ Built-in |
-| **Type Safety** | ❌ | Runtime only | ❌ | ✓ Compile-time |
-| **Deployment** | Everywhere | Everywhere | Cluster needed | Single binary |
+|Feature        |Bash        |Python            |Airflow       |Ripple          |
+|---------------|------------|------------------|--------------|----------------|
+|Scheduling     |cron        |APScheduler       |✓ Built-in    |✓ Built-in      |
+|Process Mgmt   |systemd     |supervisor        |✓ Built-in    |✓ Built-in      |
+|Error Handling |`set -e`    |try/except        |Task retries  |✓ Result type   |
+|Observability  |Manual logs |Manual logs       |UI only       |✓ Auto-trace    |
+|Partial Success|❌           |Manual tracking   |Task-level    |✓ List.partition|
+|Parallelism    |`&` and hope|ThreadPoolExecutor|✓             |✓ Built-in      |
+|Type Safety    |❌           |Runtime only      |❌             |✓ Compile-time  |
+|Deployment     |Everywhere  |Everywhere        |Cluster needed|Single binary   |
+
+-----
 
 ## Installation
 
-> ⚠️ **Note**: Installation commands below are planned features. Currently, build from source.
+⚠️ **Note**: Installation commands below are planned features. Currently, build from source.
 
 ```bash
 # Planned: Single binary install
 curl -fsSL https://ripple-lang.org/install.sh | sh
 
 # Current: Build from source
-git clone https://github.com/yourusername/ripple
-cd ripple && zig build -Doptimize=ReleaseFast
+git clone https://github.com/caige-kelly/interpreter
+cd interpreter && zig build -Doptimize=ReleaseFast
 
 # Run tests
 zig build test
 ```
 
+-----
+
 ## Quick Start
 
 ```ripple
 // hello.rip
-#System.trace_to = "file://./logs/"
-IO.stdout("Hello, Ripple!")
+System.trace_to = "file://./logs/"
+
+io::stdout "Hello, Ripple!"
 ```
 
 ```bash
 # Planned usage:
-rvm exec hello.rip     # Run once
-rvm run hello.rip      # Run as daemon
+rvm exec hello.rip  # Run once
+rvm run hello.rip   # Run as daemon
 
 # Current:
 zig build run -- examples/hello.rip
 ```
 
-## Current Status
+-----
 
-**Phase 1: Foundation** ✅ Complete
+## Development Status
+
+### Phase 1: Foundation ✅ Complete
+
 - Lexer, parser, evaluator (56 tests passing, zero memory leaks)
 - Arithmetic, strings, comparisons, booleans
 - Unary operators, parentheses for grouping
 - Boolean operators (`&&`, `||`, `!`) separate from `or`
 - No variable shadowing (by design)
 
-**Phase 2: Core Language** 🔨 In Progress  
+### Phase 2: Core Language 🔨 In Progress
+
 - Functions and lambdas (syntax: `x, y -> x + y`)
 - Lists and maps
 - Pipeline operator (`|>`)
 - Pattern matching with guards
 - Chained comparisons (`60 <= x <= 80`)
 
-**Phase 3: Error Handling** 📋 Designed
+### Phase 3: Error Handling 📋 Designed
+
 - Result type implementation
-- `?` (optional) and `!` (critical) prefixes
+- `?` (optional), `!` (critical), `^` (keep wrapped) policies
 - `or` operator for fallback
 - `match` expressions with Result patterns
+- Automatic error propagation through pipelines and method chains
 
-**Phase 4: Runtime & Stdlib** 📋 Planned
+### Phase 4: Runtime & Stdlib 📋 Planned
+
 - Process execution, file operations, networking
 - Supervisor & tracing system
 - `rvm` CLI tool
 - Standard library (List, Map, String, Process, Net, etc.)
 
-## Key Design Decisions
+-----
+
+## Key Implementation Details
 
 ### Everything Returns Result
+
+Even literal values are wrapped:
+
 ```ripple
-// By default, operations return Result<T, E>
-body := Net.get(url) |> match ->
-  ok(data, _) -> data
-  err(e, _) -> handle_error(e)
+5        // ok(5, metadata)
+x + y    // ok(result, metadata) or err(...)
 ```
 
-### Prefixes for Intent
+### Assignment Unwraps
+
+The `:=` operator unwraps Results by default for clean syntax:
+
 ```ripple
-!operation()  // ! = Must succeed or crash (critical)
-?operation()  // ? = May fail, returns value|none (optional)
-operation()   // Returns Result, handle explicitly
+x := 5 + 3   // x = 8, not ok(8, meta)
 ```
 
-### List.partition for Batch Operations
-```ripple
-results := items |> List.parallel_map(process)
+### Pipeline Policies
 
-// Returns {success: [T], failure: [E]}
-results |> List.partition |> match p ->
-  p p.failure.length == 0 -> "all succeeded"
-  p p.success.length == 0 -> "all failed"
-  p -> "partial: " + p.success.length + " ok"
+`!`, `?`, and `^` are evaluated by the pipeline/assignment context:
+
+```ripple
+x := operation       // Unwrapped
+x := ^operation      // Wrapped
+operation |> next    // Unwrapped
+^operation |> match  // Wrapped
 ```
 
 ### No Variable Shadowing
+
 ```ripple
 x := 10
 x := 20  // ERROR: x already defined
@@ -522,24 +757,29 @@ x := 20  // ERROR: x already defined
 x := 10 |> increment |> double
 ```
 
-## Philosophy: Language + IDE Partnership
+### IDE Integration
 
-Ripple's syntax is Python-clean. Type safety and error tracking come from IDE tooling:
+Ripple’s syntax is Python-clean. Type safety comes from IDE tooling:
 
-- **Hover** to see inferred types
-- **Inline hints** reveal Result types
-- **Expression traces** available in debugger
+- Hover to see inferred types
+- Inline hints reveal Result types
+- Expression traces available in debugger
 
-**Best of both worlds:** Python's readability + Rust's safety + observability built in.
+Best of both worlds: Python’s readability + Rust’s safety + observability built in.
 
-## Learn More
+-----
+
+## Documentation
 
 - **Language Reference**: `docs/reference.ripple` - Complete spec
 - **Implementation Guide**: `docs/handoff.md` - Technical details and current status
 
-## Contributing
+-----
+
+## Development
 
 Ripple is in active development using TDD. Current focus:
+
 - Core language features (functions, collections, pipelines)
 - Pattern matching implementation
 - Result type and error handling
@@ -547,12 +787,16 @@ Ripple is in active development using TDD. Current focus:
 
 See `docs/handoff.md` for architecture details and current implementation status.
 
+-----
+
 ## License
 
 [To be determined]
 
----
+-----
+
+## Tagline
 
 **Ripple: Stop duct-taping together bash, Python, cron, and hope.**
 
-*Because your ops scripts deserve better than "I think it worked?"*
+Because your ops scripts deserve better than “I think it worked?”
