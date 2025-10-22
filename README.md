@@ -8,6 +8,8 @@
 
 Stop duct-taping together bash, Python, cron, systemd, and logging just to run reliable automation. Ripple is a functional, pipeline-oriented language designed specifically for operational scripts—with built-in scheduling, supervision, and observability.
 
+Ripple is a functional scripting language with the ability to configure it's own execution environment
+
 -----
 
 ## The Problem
@@ -366,7 +368,9 @@ Without `^`, the assignment would unwrap it and you’d lose access to error det
 
 ### Evaluator Policies
 
-The symbols `!`, `?`, and `^` are **evaluator policies** - instructions that tell the evaluator how to process Results:
+Ripple has two evaluators, the `|>` (pipeline) and the `:=` (assignment). 
+
+The symbols `!`, `?`, and `^` are **evaluator policies** - instructions that tell the evaluators how to process Results:
 
 ```ripple
 // Default: Auto-unwrap in pipelines and assignment
