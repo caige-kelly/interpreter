@@ -71,7 +71,6 @@ process::doc::header """
 !system::on_failure email::configure(?email_config_map).send_body("Backups failed")
 !process::timeout 600000
 
-// Variables - assignment auto-unwraps Results
 databases := ["prod", "staging", "dev"]
 s3_url := "s3://backups"
 
@@ -85,10 +84,13 @@ process:doc::section "Backup Procedure """
 !task::retry {max_retries: 3, sleep: 30s}
 backup_db := db ->
   process::run ["pg_dump", db]
-    // Try gzip, if that fails try brotli 
-    |> ?process::run ["gzip", db] or process::run ["brotli", db]
-    // Upload to S3 (must succeed)
-    |> s3::upload "{s3_url}/last_night_backups/{db}.zip" db
+    |> dump -> process::run ["gzip", dump, ">", "backup.gz"] or process::run ["brotli", dump, ">", "backup.br"]
+    |> s3::upload "{s3_url}/last_night_backups/{db}.zip" _
+
+  // Equivalent 
+  dump := process::run ["pg_dump", db]
+  comp := process::run ["gzip", dump, ">", "backup.gz"] or process::run ["brotli", dump, ">", "backup.br"]
+  s3::upload "{s3_url}/last_night_backups/{db}.zip" comp
 
 // Parallel execution, returns [Result, Result, Result]
 results := ^databases.parallel_map backup_db, {max_concurrent: 3}
