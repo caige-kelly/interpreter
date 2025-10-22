@@ -62,9 +62,9 @@ And none of them talk to each other.
 ```ripple
 // backup.rip - everything in one place
 process::doc::header """
-Back up is designed to run every night at 3:00 am
-Logs are traced to s3://logs/ripple/
-The Ops distro is emailed on failure
+  Back up is designed to run every night at 3:00 am
+  Logs are traced to s3://logs/ripple/
+  The Ops distro is emailed on failure
 """
 !system::schedule "0 3 * * *"
 !system::trace_to "s3://logs/ripple/"
