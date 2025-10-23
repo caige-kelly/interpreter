@@ -2,6 +2,171 @@ const std = @import("std");
 const Ast = @import("ast.zig");
 const TokenType = @import("token.zig").TokenType;
 
+// ============================================================================
+// Runtime Value System
+// ============================================================================
+
+pub const Value = union(enum) {
+    number: f64,
+    string: []const u8,
+    boolean: bool,
+    none: void,
+
+    pub fn typeName(self: Value) []const u8 {
+        return switch (self) {
+            .number => "number",
+            .string => "string",
+            .boolean => "boolean",
+            .none => "none",
+        };
+    }
+
+    pub fn format(self: Value, comptime _: []const u8, _: std.fmt.FormatOptions, w: anytype) !void {
+        switch (self) {
+            .number => |n| try w.print("{d}", .{n}),
+            .string => |s| try w.print("\"{s}\"", .{s}),
+            .boolean => |b| try w.print("{}", .{b}),
+            .none => try w.writeAll("none"),
+        }
+    }
+};
+
+// ============================================================================
+// Metadata (optional, attached to Ok and Err)
+// ============================================================================
+
+pub const Meta = struct {
+    expr_source: []const u8 = "",
+    duration_ns: u64 = 0,
+    extra: std.StringHashMap([]const u8) = undefined,
+    allocator: std.mem.Allocator,
+
+    pub fn init(expr_source: []const u8, allocator: std.mem.Allocator) Meta {
+        return .{
+            .expr_source = expr_source,
+            .duration_ns = 0,
+            .extra = std.StringHashMap([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn withDuration(self: Meta, ns: u64) Meta {
+        var m = self;
+        m.duration_ns = ns;
+        return m;
+    }
+
+    pub fn set(self: *Meta, key: []const u8, val: []const u8) void {
+        _ = self.extra.put(key, val) catch {};
+    }
+
+    pub fn get(self: *const Meta, key: []const u8) ?[]const u8 {
+        return self.extra.get(key);
+    }
+
+    pub fn deinit(self: *Meta) void {
+        self.extra.deinit();
+    }
+};
+
+// ============================================================================
+// Unified Result Type  (Result<Value> essentially)
+// ============================================================================
+
+pub const Result = struct {
+    ok: Ok = .{},
+    err: Err = .{},
+
+    pub const Ok = struct {
+        value: ?*Value = null,
+        meta: ?Meta = null,
+    };
+
+    pub const Err = struct {
+        msg: ?[]const u8 = null,
+        meta: ?Meta = null,
+    };
+
+    pub fn success(v: *Value, meta: ?Meta) Result {
+        return .{ .ok = .{ .value = v, .meta = meta }, .err = .{} };
+    }
+
+    pub fn failure(msg: []const u8, meta: ?Meta) Result {
+        return .{ .ok = .{}, .err = .{ .msg = msg, .meta = meta } };
+    }
+
+    pub fn isOk(self: *const Result) bool {
+        return self.ok.value != null;
+    }
+
+    pub fn isErr(self: *const Result) bool {
+        return self.err.msg != null;
+    }
+
+    pub fn get(self: *const Result) ?*Value {
+        return self.ok.value;
+    }
+
+    pub fn getErr(self: *const Result) ?[]const u8 {
+        return self.err.msg;
+    }
+
+    pub fn meta(self: *const Result) ?*const Meta {
+        return if (self.isOk()) self.ok.meta else self.err.meta;
+    }
+
+    pub fn deinit(self: *Result) void {
+        if (self.ok.meta) |*m| m.deinit();
+        if (self.err.meta) |*m| m.deinit();
+        if (self.ok.value) |v| self.ok.meta.?.allocator.destroy(v);
+    }
+};
+
+// ============================================================================
+// Evaluation Core
+// ============================================================================
+
+pub const EvalConfig = struct { enable_trace: bool = false };
+
+const EvalState = struct {
+    globals: std.StringHashMap(Result),
+    allocator: std.mem.Allocator,
+};
+
+// Example literal evaluator rewritten for the new model.
+fn evalLiteral(state: *EvalState, lit: Ast.Literal) !Result {
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = switch (lit) {
+        .string => |s| Value{ .string = s },
+        .number => |n| Value{ .number = n },
+        .boolean => |b| Value{ .boolean = b },
+        .none => Value{ .none = {} },
+    };
+    const meta = Meta.init("literal", state.allocator);
+    return Result.success(val_ptr, meta);
+}
+
+// Example division rewritten.
+fn evalDivision(state: *EvalState, left: Value, right: Value) !Result {
+    var meta = Meta.init("division", state.allocator);
+
+    if (left != .number or right != .number) {
+        return Result.failure("type mismatch", meta);
+    }
+    if (right.number == 0) {
+        meta.set("severity", "fatal");
+        return Result.failure("division by zero", meta);
+    }
+
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = Value{ .number = left.number / right.number };
+    return Result.success(val_ptr, meta);
+}
+
+const std = @import("std");
+const Ast = @import("ast.zig");
+const TokenType = @import("token.zig").TokenType;
+
 pub const EvalError = error{
     UndefinedVariable,
     VariableAlreadyDefined,
