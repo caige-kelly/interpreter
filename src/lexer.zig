@@ -154,6 +154,8 @@ fn scanToken(
         '@' => return makeToken(state, tokens, allocator, .AT, .none),
         '#' => return makeToken(state, tokens, allocator, .HASH, .none),
         '^' => return makeToken(state, tokens, allocator, .CARET, .none),
+        '?' => return makeToken(state, tokens, allocator, .QUESTION, .none),
+
         '|' => return if (state.match('>'))
             makeToken(state, tokens, allocator, .PIPE, .none)
         else
@@ -186,17 +188,17 @@ fn scanToken(
         ' ', '\r', '\t' => return,
         '\n' => return newLine(state, tokens, allocator),
         else => if (isNumber(c)) {
-                const literal = try scanNumber(state);
-                return makeToken(state, tokens, allocator, .NUMBER, literal);
-            } else if (isAlpha(c)) {
-                // Scan the identifier/keyword
-                while (isAlpha(state.peek()) or isNumber(state.peek())) {
-                    _ = state.advance();
+            const literal = try scanNumber(state);
+            return makeToken(state, tokens, allocator, .NUMBER, literal);
+        } else if (isAlpha(c)) {
+            // Scan the identifier/keyword
+            while (isAlpha(state.peek()) or isNumber(state.peek())) {
+                _ = state.advance();
             }
-    
+
             const word = state.source[state.start..state.current];
             const token_type = KeywordMap.get(word) orelse .IDENTIFIER;
-    
+
             // Create literal value for booleans
             const literal: Literal = if (token_type == .BOOLEAN) blk: {
                 if (std.mem.eql(u8, word, "true")) {
@@ -207,7 +209,7 @@ fn scanToken(
             } else .none;
 
             return makeToken(state, tokens, allocator, token_type, literal);
-        } else  {
+        } else {
             return undefinedLexeme(state);
         },
     }

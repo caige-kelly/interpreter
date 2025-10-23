@@ -2,6 +2,7 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
+const Value = @import("evaluator.zig").Value;
 const ast = @import("ast.zig");
 const eval = @import("evaluator.zig");
 const lexer = @import("lexer.zig");
@@ -93,7 +94,7 @@ pub const Process = struct {
 
         return RunAttempt{
             .status = .success,
-            .value = eval_result.value,
+            .value = if (eval_result.result.value) |v| v.* else Value.none,
             .err = null,
             .trace = trace_copy,
             .duration_ms = duration_ms,

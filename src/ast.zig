@@ -14,14 +14,15 @@ pub const Program = struct {
     }
 };
 
-
 pub const Expr = union(enum) {
     literal: Literal,
     identifier: []const u8,
     binary: BinaryExpr,
-    unary: UnaryExpr,        // Add this line
+    unary: UnaryExpr, // Add this line
     assignment: AssignExpr,
-    
+    policy: Policy,
+    pipe: PipeExpr,
+
     pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .binary => |bin| {
@@ -30,7 +31,7 @@ pub const Expr = union(enum) {
                 allocator.destroy(bin.left);
                 allocator.destroy(bin.right);
             },
-            .unary => |un| {             // Add this case
+            .unary => |un| { // Add this case
                 un.operand.deinit(allocator);
                 allocator.destroy(un.operand);
             },
@@ -45,6 +46,18 @@ pub const Expr = union(enum) {
 
 pub const Type = enum { number, string, boolean, none, unknown };
 
+pub const PolicyValue = enum {
+    none,
+    panic_on_error, // !
+    keep_wrapped, // ^
+    unwrap_or_none, // ?
+};
+
+pub const Policy = struct {
+    policy: PolicyValue,
+    expr: *Expr,
+};
+
 pub const Literal = union(enum) {
     number: f64,
     string: []const u8,
@@ -56,7 +69,6 @@ pub const UnaryExpr = struct {
     operator: TokenType,
     operand: *Expr,
 };
-
 
 pub const MapExpr = struct {
     pairs: []MapPair,

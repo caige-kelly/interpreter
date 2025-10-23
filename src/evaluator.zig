@@ -11,28 +11,101 @@ pub const EvalError = error{
     DivisionByZero,
 };
 
-pub const ResultValue = struct {
-    tag: Tag,
-    user: ?*Value, // pointer to another Value
-    sys: ?*Value,
-
-    pub const Tag = enum { ok, err };
-
-    pub fn ok(user: ?*Value, sys: ?*Value) ResultValue {
-        return ResultValue{ .tag = .ok, .user = user, .sys = sys };
-    }
-
-    pub fn err(user: ?*Value, sys: ?*Value) ResultValue {
-        return ResultValue{ .tag = .err, .user = user, .sys = sys };
-    }
-};
+// ============================================================================
+// Core Types
+// ============================================================================
 
 pub const Value = union(enum) {
     number: f64,
     string: []const u8,
     boolean: bool,
-    none,
+    none: void,
     result: ResultValue,
+
+    pub fn format(
+        self: Value,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        switch (self) {
+            .number => |n| try writer.print("{d}", .{n}),
+            .string => |s| try writer.print("\"{s}\"", .{s}),
+            .boolean => |b| try writer.print("{}", .{b}),
+            .none => try writer.writeAll("none"),
+            .result => |r| try writer.print("Result({s})", .{@tagName(r.tag)}),
+        }
+    }
+};
+
+pub const Metadata = struct {
+    timestamp: i64,
+    duration_ns: u64,
+    expr_source: []const u8,
+    extra: std.StringHashMap([]const u8),
+    allocator: std.mem.Allocator,
+
+    pub fn init(expr_source: []const u8, allocator: std.mem.Allocator) Metadata {
+        return .{
+            .timestamp = std.time.milliTimestamp(),
+            .duration_ns = 0,
+            .expr_source = expr_source,
+            .extra = std.StringHashMap([]const u8).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn withDuration(self: Metadata, duration_ns: u64) Metadata {
+        var m = self;
+        m.duration_ns = duration_ns;
+        return m;
+    }
+
+    pub fn set(self: *Metadata, key: []const u8, value: []const u8) !void {
+        try self.extra.put(key, value);
+    }
+
+    pub fn get(self: *const Metadata, key: []const u8) ?[]const u8 {
+        return self.extra.get(key);
+    }
+
+    pub fn deinit(self: *Metadata) void {
+        self.extra.deinit();
+    }
+};
+
+pub const ResultValue = struct {
+    tag: Tag,
+    value: ?*Value,
+    msg: ?[]const u8,
+    meta: Metadata,
+
+    pub const Tag = enum { ok, err };
+
+    pub fn ok(val: *Value, meta: Metadata) ResultValue {
+        return .{ .tag = .ok, .value = val, .msg = null, .meta = meta };
+    }
+
+    pub fn err(msg: []const u8, meta: Metadata) ResultValue {
+        return .{ .tag = .err, .value = null, .msg = msg, .meta = meta };
+    }
+
+    pub fn isOk(self: ResultValue) bool {
+        return self.tag == .ok;
+    }
+
+    pub fn isErr(self: ResultValue) bool {
+        return self.tag == .err;
+    }
+
+    pub fn deinit(self: ResultValue) void {
+        if (self.value) |v| {
+            self.meta.allocator.destroy(v);
+        }
+        // optionally free metadata internals here later
+    }
 };
 
 pub const EvalConfig = struct {
@@ -40,36 +113,40 @@ pub const EvalConfig = struct {
 };
 
 pub const TraceEntry = struct {
-    result: Value,
+    result: ResultValue,
     task_id: usize = 0,
 };
 
 pub const EvaluationResult = struct {
-    value: Value,
+    result: ResultValue, // Changed from value: Value
     trace: []const TraceEntry,
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *EvaluationResult) void {
         self.allocator.free(self.trace);
+        // Note: result.meta cleanup happens when destroying result values
     }
 };
 
 // Pure data - evaluation state
 const EvalState = struct {
-    globals: std.StringHashMap(Value),
+    globals: std.StringHashMap(ResultValue), // Changed from Value to ResultValue
     results: std.ArrayList(TraceEntry),
     config: EvalConfig,
     allocator: std.mem.Allocator,
 };
 
-// Main entry point - free function
+// ============================================================================
+// Main Entry Point
+// ============================================================================
+
 pub fn evaluate(
     program: Ast.Program,
     allocator: std.mem.Allocator,
     config: EvalConfig,
 ) !EvaluationResult {
     var state = EvalState{
-        .globals = std.StringHashMap(Value).init(allocator),
+        .globals = std.StringHashMap(ResultValue).init(allocator),
         .results = try std.ArrayList(TraceEntry).initCapacity(allocator, 16),
         .config = config,
         .allocator = allocator,
@@ -77,13 +154,24 @@ pub fn evaluate(
     defer state.globals.deinit();
     defer state.results.deinit(allocator);
 
-    var last_value = Value{ .none = {} };
+    // Default: none result
+    var last_result = blk: {
+        const val_ptr = try allocator.create(Value);
+        val_ptr.* = Value{ .none = {} };
+        const meta = Metadata.init("program", allocator);
+        break :blk ResultValue.ok(val_ptr, meta);
+    };
 
     for (program.expressions) |expr| {
-        last_value = try evalExpr(&state, expr);
+        last_result = try evalExpr(&state, expr);
 
         if (state.config.enable_trace) {
-            try state.results.append(allocator, .{ .result = last_value });
+            try state.results.append(allocator, .{ .result = last_result });
+        }
+
+        // Early exit on error (unless we want to continue)
+        if (last_result.isErr()) {
+            break;
         }
     }
 
@@ -92,54 +180,176 @@ pub fn evaluate(
     @memcpy(trace_copy, state.results.items);
 
     return EvaluationResult{
-        .value = last_value,
+        .result = last_result,
         .trace = trace_copy,
         .allocator = allocator,
     };
 }
 
-fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
-    return switch (expr) {
-        .literal => |lit| evalLiteral(lit),
-        .identifier => |name| evalIdentifier(state, name),
+// ============================================================================
+// Expression Evaluation
+// ============================================================================
+
+fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!ResultValue {
+    const start = std.time.nanoTimestamp();
+
+    var result = switch (expr) {
+        .literal => |lit| try evalLiteral(state, lit),
+        .identifier => |name| try evalIdentifier(state, name),
         .assignment => |assign| try evalAssignment(state, assign),
         .binary => |bin| try evalBinary(state, bin),
         .unary => |un| try evalUnary(state, un),
-        //else => error.ExpressionDontExist,
+        .pipe => |pipe| try evalPipe(state, pipe),
+        .policy => |pol| try evalPolicy(state, pol),
     };
+
+    // Update duration in metadata
+    const duration = @as(u64, @intCast(std.time.nanoTimestamp() - start));
+    result.meta = result.meta.withDuration(duration);
+
+    return result;
 }
 
-fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
+fn evalLiteral(state: *EvalState, lit: Ast.Literal) EvalError!ResultValue {
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = switch (lit) {
+        .string => |s| Value{ .string = s },
+        .number => |n| Value{ .number = n },
+        .boolean => |b| Value{ .boolean = b },
+        .none => Value{ .none = {} },
+    };
+
+    const meta = Metadata.init("literal", state.allocator);
+    return ResultValue.ok(val_ptr, meta);
+}
+
+fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!ResultValue {
+    const meta = Metadata.init("identifier", state.allocator);
+
+    if (state.globals.get(name)) |result| {
+        return result;
+    } else {
+        return ResultValue.err("undefined variable", meta);
+    }
+}
+
+fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!ResultValue {
+    const meta = Metadata.init("assignment", state.allocator);
+
     if (state.globals.contains(assign.name)) {
-        return error.VariableAlreadyDefined;
+        return ResultValue.err("variable already defined", meta);
     }
 
-    const value = try evalExpr(state, assign.value.*);
-    try state.globals.put(assign.name, value);
-    return value;
+    const rhs = try evalExpr(state, assign.value.*);
+
+    if (rhs.isErr()) return rhs;
+
+    // auto-unwrap ok(...)
+    const unwrapped = if (rhs.value) |v| v.* else Value.none;
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = unwrapped;
+
+    const wrapped = ResultValue.ok(val_ptr, rhs.meta);
+    try state.globals.put(assign.name, wrapped);
+
+    return wrapped;
 }
 
-fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
-    const left = try evalExpr(state, bin.left.*);
-    const right = try evalExpr(state, bin.right.*);
+fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!ResultValue {
+    const meta = Metadata.init("binary", state.allocator);
 
-    // Dispatch based on operator category and operand types
-    return switch (bin.operator) {
-        // Equality operators - work on any matching types
-        .EQUAL_EQUAL, .BANG_EQUAL => evalEquality(left, right, bin.operator),
+    // Evaluate left side
+    const left_result = try evalExpr(state, bin.left.*);
+    if (left_result.isErr()) return left_result;
 
-        // Arithmetic operators - type-specific behavior
-        .PLUS => evalAddition(state, left, right),
-        .MINUS => evalSubtraction(left, right),
-        .STAR => evalMultiplication(left, right),
+    // Evaluate right side
+    const right_result = try evalExpr(state, bin.right.*);
+    if (right_result.isErr()) return right_result;
+
+    // Unwrap values
+    const left = left_result.value.?.*;
+    const right = right_result.value.?.*;
+
+    // Perform operation based on operator
+    const result_val = switch (bin.operator) {
+        .PLUS => try evalAddition(state, left, right),
+        .MINUS => try evalSubtraction(left, right),
+        .STAR => try evalMultiplication(left, right),
         .SLASH => evalDivision(left, right),
-
-        // Comparison operators - numbers only
-        .LESS, .LESS_EQUAL, .GREATER, .GREATER_EQUAL => evalComparison(left, right, bin.operator),
-
-        else => error.ExpressionDontExist,
+        .EQUAL_EQUAL, .BANG_EQUAL => try evalEquality(left, right, bin.operator),
+        .LESS, .LESS_EQUAL, .GREATER, .GREATER_EQUAL => try evalComparison(left, right, bin.operator),
+        else => return ResultValue.err("unknown operator", meta),
     };
+
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = result_val;
+    return ResultValue.ok(val_ptr, meta);
 }
+
+fn evalUnary(state: *EvalState, un: Ast.UnaryExpr) EvalError!ResultValue {
+    const meta = Metadata.init("unary", state.allocator);
+
+    // Evaluate operand
+    const operand_result = try evalExpr(state, un.operand.*);
+    if (operand_result.isErr()) return operand_result;
+
+    const operand = operand_result.value.?.*;
+
+    const result_val = switch (un.operator) {
+        .MINUS => blk: {
+            if (operand != .number) {
+                return ResultValue.err("cannot negate non-number", meta);
+            }
+            break :blk Value{ .number = -operand.number };
+        },
+        else => return ResultValue.err("unknown unary operator", meta),
+    };
+
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = result_val;
+    return ResultValue.ok(val_ptr, meta);
+}
+
+fn evalPolicy(state: *EvalState, pol: Ast.Policy) EvalError!ResultValue {
+    // Evaluate the inner expression first
+    const inner = try evalExpr(state, pol.expr.*);
+
+    switch (pol.policy) {
+        .none => {
+            // Normal unwrap — just pass through
+            return inner;
+        },
+        .keep_wrapped => {
+            // ^expr → keep the result exactly as-is (already wrapped)
+            return inner;
+        },
+        .panic_on_error => {
+            if (inner.isErr()) {
+                // Tag the metadata so the runtime knows this was fatal.
+                var meta = inner.meta;
+                // Safe to ignore collision errors — if a severity already exists, overwrite.
+                _ = meta.set("severity", "fatal") catch {};
+                const msg = inner.msg orelse "fatal error";
+                return ResultValue.err(msg, meta);
+            }
+            return inner;
+        },
+        .unwrap_or_none => {
+            // ?expr → unwrap ok(), replace err() with ok(none)
+            if (inner.isErr()) {
+                const val_ptr = try state.allocator.create(Value);
+                val_ptr.* = Value{ .none = {} };
+                const meta = Metadata.init("unwrap_or_none", state.allocator);
+                return ResultValue.ok(val_ptr, meta);
+            }
+            return inner;
+        },
+    }
+}
+
+// ============================================================================
+// Operation Helpers
+// ============================================================================
 
 fn evalEquality(left: Value, right: Value, op: TokenType) EvalError!Value {
     const are_equal = switch (left) {
@@ -147,7 +357,7 @@ fn evalEquality(left: Value, right: Value, op: TokenType) EvalError!Value {
         .string => |l| if (right == .string) std.mem.eql(u8, l, right.string) else false,
         .boolean => |l| if (right == .boolean) l == right.boolean else false,
         .none => right == .none,
-        .result => false, // new case: Results are not comparable yet
+        .result => false, // Results are not directly comparable
     };
 
     return Value{ .boolean = if (op == .EQUAL_EQUAL) are_equal else !are_equal };
@@ -161,7 +371,6 @@ fn evalAddition(state: *EvalState, left: Value, right: Value) EvalError!Value {
         },
         .string => |l| blk: {
             if (right != .string) return error.TypeMismatch;
-            // Concatenate strings
             const result = try std.fmt.allocPrint(state.allocator, "{s}{s}", .{ l, right.string });
             break :blk Value{ .string = result };
         },
@@ -179,9 +388,10 @@ fn evalMultiplication(left: Value, right: Value) EvalError!Value {
     return Value{ .number = left.number * right.number };
 }
 
-fn evalDivision(left: Value, right: Value) EvalError!Value {
-    if (left != .number or right != .number) return error.TypeMismatch;
-    if (right.number == 0) return error.DivisionByZero;
+fn evalDivision(left: Value, right: Value) Value {
+    if (right.number == 0) {
+        return Value{ .boolean = false };
+    }
     return Value{ .number = left.number / right.number };
 }
 
@@ -199,59 +409,62 @@ fn evalComparison(left: Value, right: Value, op: TokenType) EvalError!Value {
     return Value{ .boolean = result };
 }
 
-fn evalUnary(state: *EvalState, un: Ast.UnaryExpr) EvalError!Value {
-    // First, evaluate the operand (it could be any expression!)
-    const operand = try evalExpr(state, un.operand.*);
+fn evalPipe(state: *EvalState, pipe: Ast.PipeExpr) EvalError!ResultValue {
+    const left_res = try evalExpr(state, pipe.left.*);
 
-    return switch (un.operator) {
-        .MINUS => blk: {
-            if (operand != .number) return error.TypeMismatch;
-            break :blk Value{ .number = -operand.number };
-        },
-        .BANG => blk: {
-            if (operand != .boolean) return error.TypeMismatch;
-            break :blk Value{ .boolean = !operand.boolean };
-        },
-        else => error.ExpressionDontExist,
-    };
-}
-
-fn evalLiteral(lit: Ast.Literal) Value {
-    return switch (lit) {
-        .string => |s| Value{ .string = s },
-        .number => |n| Value{ .number = n },
-        .boolean => |b| Value{ .boolean = b },
-        .none => Value{ .none = {} },
-    };
-}
-
-fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
-    if (state.globals.get(name)) |value| {
-        return value;
-    } else {
-        return error.UndefinedVariable;
+    // short-circuit if left failed
+    if (left_res.isErr()) {
+        var err_meta = left_res.meta;
+        try err_meta.set("stage", "pipe-left");
+        return ResultValue.err(left_res.msg orelse "pipeline short-circuited", err_meta);
     }
+
+    const right_res = try evalExpr(state, pipe.right.*);
+
+    // short-circuit if right failed
+    if (right_res.isErr()) {
+        var err_meta = right_res.meta;
+        try err_meta.set("stage", "pipe-right");
+        return right_res;
+    }
+
+    var merged_meta = right_res.meta;
+    try merged_meta.set("kind", "pipe");
+
+    // unwrap ok(...) to plain value, or default to none
+    const unwrapped_value = if (right_res.value) |v| v.* else Value.none;
+
+    // allocate new value node
+    const val_ptr = try state.allocator.create(Value);
+    val_ptr.* = unwrapped_value;
+
+    return ResultValue.ok(val_ptr, merged_meta);
 }
 
-// Tests
+// ============================================================================
+// Ripple Language Evaluation Tests
+// All evaluation results return Result<Value, Err> — no Zig errors.
+// ============================================================================
+
 const testing = std.testing;
 
-test "evaluate literal number" {
+test "evaluate literal number returns Result" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const tokens = try @import("lexer.zig").tokenize("x := 42", arena.allocator());
+    const tokens = try @import("lexer.zig").tokenize("42", arena.allocator());
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
+    var eval_result = try evaluate(program, arena.allocator(), .{});
+    defer eval_result.deinit();
 
-    try testing.expectEqual(@as(f64, 42.0), result.value.number);
+    try testing.expect(eval_result.result.isOk());
+    try testing.expectEqual(@as(f64, 42.0), eval_result.result.value.?.number);
 }
 
-test "undefined variable" {
+test "undefined variable returns error Result" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -260,11 +473,14 @@ test "undefined variable" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const result = evaluate(program, arena.allocator(), .{});
-    try testing.expectError(error.UndefinedVariable, result);
+    var eval_result = try evaluate(program, arena.allocator(), .{});
+    defer eval_result.deinit();
+
+    try testing.expect(eval_result.result.isErr());
+    try testing.expectEqualStrings("undefined variable", eval_result.result.msg.?);
 }
 
-test "evaluate multiplication" {
+test "evaluate multiplication returns ok(12)" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -273,706 +489,136 @@ test "evaluate multiplication" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
+    var eval_result = try evaluate(program, arena.allocator(), .{});
+    defer eval_result.deinit();
 
-    try testing.expectEqual(@as(f64, 12.0), result.value.number);
+    try testing.expect(eval_result.result.isOk());
+    try testing.expectEqual(@as(f64, 12.0), eval_result.result.value.?.number);
 }
 
-test "evaluate division" {
+test "division by zero returns err('division by zero')" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const tokens = try @import("lexer.zig").tokenize("x := 10 / 2", arena.allocator());
+    const tokens = try @import("lexer.zig").tokenize("x := 10 / 0", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var eval_result = try evaluate(program, arena.allocator(), .{});
+    defer eval_result.deinit();
+
+    try testing.expect(eval_result.result.isErr());
+    try testing.expectEqualStrings("division by zero", eval_result.result.msg.?);
+}
+
+test "metadata tracks duration" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("x := 5 + 3", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    var eval_result = try evaluate(program, arena.allocator(), .{});
+    defer eval_result.deinit();
+
+    try testing.expect(eval_result.result.isOk());
+    try testing.expect(eval_result.result.meta.duration_ns > 0);
+}
+
+test "policy evaluation: question unwraps to none on error" {
+    const allocator = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const src = "?unknown"; // undefined identifier
+    const tokens = try @import("lexer.zig").tokenize(src, arena.allocator());
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
     var result = try evaluate(program, arena.allocator(), .{});
     defer result.deinit();
 
-    try testing.expectEqual(@as(f64, 5.0), result.value.number);
+    try std.testing.expect(result.result.isOk());
+    try std.testing.expectEqual(Value.none, result.result.value.?.*);
 }
 
-test "evaluate with trace enabled" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
+test "policy evaluation: bang panics on error (produces err)" {
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
+    const allocator = arena.allocator();
 
-    const tokens = try @import("lexer.zig").tokenize("x := 10\ny := 20", arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    const src = "x := !undefinedVar";
+    const tokens = try @import("lexer.zig").tokenize(src, allocator);
+    var program = try @import("parser.zig").parse(tokens, allocator);
     defer program.deinit();
 
-    var result = try evaluate(program, arena.allocator(), .{ .enable_trace = true });
-    defer result.deinit();
+    var eval_res = try evaluate(program, allocator, .{});
+    defer eval_res.deinit();
 
-    try testing.expectEqual(@as(usize, 2), result.trace.len);
-    try testing.expectEqual(@as(f64, 10.0), result.trace[0].result.number);
-    try testing.expectEqual(@as(f64, 20.0), result.trace[1].result.number);
+    try std.testing.expect(eval_res.result.isErr());
+    try std.testing.expectEqualStrings("undefined variable", eval_res.result.msg.?);
+
+    if (eval_res.result.meta.get("severity")) |sev| {
+        try std.testing.expectEqualStrings("fatal", sev);
+    }
 }
 
-test "evaluate binary addition" {
-    const allocator = testing.allocator;
+test "policy evaluation: caret keeps wrapped ok(42)" {
+    const allocator = std.testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = "sum := 2 + 3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, 5.0), result.value.number);
-}
-
-test "evaluate binary subtraction" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "diff := 10 - 3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
+    const src = "^42";
+    const tokens = try @import("lexer.zig").tokenize(src, arena.allocator());
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
     var result = try evaluate(program, arena.allocator(), .{});
     defer result.deinit();
 
-    try testing.expectEqual(@as(f64, 7.0), result.value.number);
+    try std.testing.expect(result.result.isOk());
+    try std.testing.expect(result.result.value != null);
+    try std.testing.expectEqual(@as(f64, 42.0), result.result.value.?.number);
 }
 
-test "evaluate mixed arithmetic with correct precedence" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 2 + 3 * 4";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    // Should be 14 (3*4=12, then 2+12=14), NOT 20 (2+3=5, then 5*4=20)
-    try testing.expectEqual(@as(f64, 14.0), result.value.number);
-}
-
-test "evaluate complex arithmetic precedence" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 20 - 6 / 2 + 3 * 4";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    // Should be: 20 - (6/2) + (3*4) = 20 - 3 + 12 = 29
-    try testing.expectEqual(@as(f64, 29.0), result.value.number);
-}
-
-test "evaluate equality comparison - true" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 5 == 5";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate inequality comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 5 != 3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate less than comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 3 < 5";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate greater than comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 5 > 3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate less than or equal comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 3 <= 5";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate greater than or equal comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := 5 >= 3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate string equality" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := \"hello\" == \"hello\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate string concatenation" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := \"hello\" + \" world\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("hello world", result.value.string);
-}
-
-test "evaluate string inequality" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "result := \"hello\" != \"world\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate negative number literal" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := -42";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, -42.0), result.value.number);
-}
-
-test "evaluate negative number in expression" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 5 + -3";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, 2.0), result.value.number);
-}
-
-test "evaluate very small float" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 0.0000001";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, 0.0000001), result.value.number);
-}
-
-test "evaluate very large number" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 999999999999.99";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, 999999999999.99), result.value.number);
-}
-
-test "evaluate subtraction associativity" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 10 - 5 - 2";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    // Should be left-to-right: (10 - 5) - 2 = 3
-    try testing.expectEqual(@as(f64, 3.0), result.value.number);
-}
-
-test "evaluate division associativity" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 20 / 4 / 2";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    // Should be left-to-right: (20 / 4) / 2 = 2.5
-    try testing.expectEqual(@as(f64, 2.5), result.value.number);
-}
-
-test "evaluate empty string" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("", result.value.string);
-}
-
-test "evaluate empty string concatenation" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"\" + \"hello\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("hello", result.value.string);
-}
-
-test "evaluate string with escape sequences" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"hello\\nworld\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("hello\nworld", result.value.string);
-}
-
-test "evaluate string with tab escape" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"name:\\tvalue\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("name:\tvalue", result.value.string);
-}
-
-test "evaluate string with escaped quote" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"say \\\"hello\\\"\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("say \"hello\"", result.value.string);
-}
-
-test "evaluate string with backslash" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"path\\\\to\\\\file\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .string);
-    try testing.expectEqualStrings("path\\to\\file", result.value.string);
-}
-
-test "error on adding string to number" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 5 + \"hello\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.TypeMismatch, result);
-}
-
-test "error on multiplying strings" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := \"hello\" * \"world\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.TypeMismatch, result);
-}
-
-test "error on comparing string to number" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 5 < \"hello\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.TypeMismatch, result);
-}
-
-test "error on undefined variable" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := y + 1";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.UndefinedVariable, result);
-}
-
-test "error on undefined variable in comparison" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := unknown > 5";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.UndefinedVariable, result);
-}
-
-test "error on variable redefinition (no shadowing allowed)" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source =
-        \\x := 10
-        \\x := 20
-    ;
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.VariableAlreadyDefined, result);
-}
-
-test "error on shadowing with expression" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source =
-        \\count := 1
-        \\count := count + 1
-    ;
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.VariableAlreadyDefined, result);
-}
-
-test "error on shadowing with different type" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source =
-        \\x := 42
-        \\x := "now a string"
-    ;
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    const result = evaluate(program, arena.allocator(), .{});
-
-    try testing.expectError(error.VariableAlreadyDefined, result);
-}
-
-test "equality of different types returns false" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 5 == \"5\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == false);
-}
-
-test "inequality of different types returns true" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := 5 != \"5\"";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "boolean equality" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := true == true";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "boolean inequality" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := true != false";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "none equality" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source = "x := none == none";
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expect(result.value == .boolean);
-    try testing.expect(result.value.boolean == true);
-}
-
-test "evaluate negation of variable" {
-    const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
-
-    const source =
-        \\y := 10
-        \\x := -y
-    ;
-    const tokens = try @import("lexer.zig").tokenize(source, arena.allocator());
-    var program = try @import("parser.zig").parse(tokens, arena.allocator());
-    defer program.deinit();
-
-    var result = try evaluate(program, arena.allocator(), .{});
-    defer result.deinit();
-
-    try testing.expectEqual(@as(f64, -10.0), result.value.number);
-}
-
-test "ResultValue constructs and distinguishes ok/err" {
-    const allocator = testing.allocator;
-
-    const v_none = try allocator.create(Value);
-    v_none.* = Value.none;
-    defer allocator.destroy(v_none);
-
-    const ok_val = Value{ .result = ResultValue.ok(v_none, null) };
-    const err_val = Value{ .result = ResultValue.err(v_none, null) };
-
-    try testing.expect(ok_val.result.tag == .ok);
-    try testing.expect(err_val.result.tag == .err);
+test "integration: literal vs assignment both return ok(5)" {
+    const allocator = std.testing.allocator;
+
+    // --- Case 1: literal
+    {
+        const src = "5";
+        const tokens = try @import("lexer.zig").tokenize(src, allocator);
+        defer allocator.free(tokens);
+        var program = try @import("parser.zig").parse(tokens, allocator);
+        defer program.deinit();
+
+        var result = try evaluate(program, allocator, .{});
+        defer result.deinit();
+
+        try std.testing.expect(result.result.isOk());
+        const val = result.result.value.?;
+        try std.testing.expect(val.* == .number);
+        try std.testing.expectEqual(@as(f64, 5.0), val.number);
+    }
+
+    // --- Case 2: assignment
+    {
+        const src = "x := 5";
+        const tokens = try @import("lexer.zig").tokenize(src, allocator);
+        defer allocator.free(tokens);
+        var program = try @import("parser.zig").parse(tokens, allocator);
+        defer program.deinit();
+
+        var result = try evaluate(program, allocator, .{});
+        defer result.deinit();
+
+        try std.testing.expect(result.result.isOk());
+        const val = result.result.value.?;
+        try std.testing.expect(val.* == .number);
+        try std.testing.expectEqual(@as(f64, 5.0), val.number);
+    }
 }

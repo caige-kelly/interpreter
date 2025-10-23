@@ -59,7 +59,7 @@ pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
 }
 
 fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    const expr = try parsEquality(state, allocator);
+    const expr = try parsePipeline(state, allocator);
 
     var explicit_type: ?Type = null;
 
@@ -81,7 +81,7 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     }
 
     skipNewlines(state);
-    const value = try parsEquality(state, allocator);
+    const value = try parsePipeline(state, allocator);
 
     switch (expr) {
         .identifier => |name| {
@@ -97,6 +97,30 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         },
         else => return error.InvalidAssignmentTarget,
     }
+}
+
+fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    var left = try parsEquality(state, allocator);
+
+    while (state.match(.PIPE)) {
+        skipNewlines(state);
+        const right = try parsEquality(state, allocator);
+
+        const left_ptr = try allocator.create(Ast.Expr);
+        left_ptr.* = left;
+
+        const right_ptr = try allocator.create(Ast.Expr);
+        right_ptr.* = right;
+
+        left = Ast.Expr{
+            .pipe = .{
+                .left = left_ptr,
+                .right = right_ptr,
+            },
+        };
+    }
+
+    return left;
 }
 
 fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
@@ -122,17 +146,18 @@ fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
             },
         };
     }
-    
+
     return left;
 }
 
 fn parseComparison(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     var left = try parseBinary(state, allocator);
 
-    while (state.peek().type == .LESS or 
-           state.peek().type == .LESS_EQUAL or
-           state.peek().type == .GREATER or 
-           state.peek().type == .GREATER_EQUAL) {
+    while (state.peek().type == .LESS or
+        state.peek().type == .LESS_EQUAL or
+        state.peek().type == .GREATER or
+        state.peek().type == .GREATER_EQUAL)
+    {
         const operator = state.consume();
         skipNewlines(state);
 
@@ -184,13 +209,13 @@ fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
 }
 
 fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    var left = try parseUnary(state, allocator);
+    var left = try parsePolicy(state, allocator);
 
     while (state.peek().type == .STAR or state.peek().type == .SLASH) {
         const operator = state.consume();
         skipNewlines(state);
 
-        const right = try parseUnary(state, allocator);
+        const right = try parsePolicy(state, allocator);
 
         const left_ptr = try allocator.create(Ast.Expr);
         left_ptr.* = left;
@@ -210,27 +235,57 @@ fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Ex
     return left;
 }
 
-fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    // Check for unary operators: - and !
-    if (state.peek().type == .MINUS or state.peek().type == .BANG) {
-        const operator = state.consume();
+fn parsePolicy(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    // handle prefix policies
+    if (state.peek().type == .CARET or
+        state.peek().type == .QUESTION or
+        state.peek().type == .BANG)
+    {
+        const token = state.consume();
         skipNewlines(state);
-        
-        // Recursive for multiple unary ops like --x or !-x
+
         const operand = try parseUnary(state, allocator);
-        
         const operand_ptr = try allocator.create(Ast.Expr);
         operand_ptr.* = operand;
-        
+
+        const policy_val = switch (token.type) {
+            .CARET => Ast.PolicyValue.keep_wrapped,
+            .QUESTION => Ast.PolicyValue.unwrap_or_none,
+            .BANG => Ast.PolicyValue.panic_on_error,
+            else => Ast.PolicyValue.none,
+        };
+
+        return Ast.Expr{
+            .policy = .{
+                .policy = policy_val,
+                .expr = operand_ptr,
+            },
+        };
+    }
+
+    // otherwise just parse normally
+    return parseUnary(state, allocator);
+}
+
+fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    // Only true unaries should stay here. Keep MINUS; if you want logical-not,
+    // consider a `not` keyword to avoid ambiguity with bang policy.
+    if (state.peek().type == .MINUS) {
+        const op = state.consume();
+        skipNewlines(state);
+        const operand = try parseUnary(state, allocator);
+
+        const operand_ptr = try allocator.create(Ast.Expr);
+        operand_ptr.* = operand;
+
         return Ast.Expr{
             .unary = .{
-                .operator = operator.type,
+                .operator = op.type,
                 .operand = operand_ptr,
             },
         };
     }
-    
-    // No unary operator, parse primary
+
     return parsePrimary(state, allocator);
 }
 
@@ -269,6 +324,7 @@ test "parse multiplication - manual tokens" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
+    const a = arena.allocator();
 
     const tokens = [_]Token{
         Token{ .type = .IDENTIFIER, .lexeme = "x", .literal = null, .line = 1, .column = 1 },
@@ -279,17 +335,15 @@ test "parse multiplication - manual tokens" {
         Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 11 },
     };
 
-    var program = try parse(&tokens, arena.allocator());
+    var program = try parse(&tokens, a);
     defer program.deinit();
 
     try testing.expectEqual(@as(usize, 1), program.expressions.len);
-
     const stmt = program.expressions[0];
     try testing.expect(stmt == .assignment);
 
     const assign = stmt.assignment;
     try testing.expectEqualStrings("x", assign.name);
-
     try testing.expect(assign.value.* == .binary);
 
     const binary = assign.value.binary;
@@ -300,4 +354,109 @@ test "parse multiplication - manual tokens" {
 
     try testing.expect(binary.right.* == .literal);
     try testing.expectEqual(@as(f64, 4.0), binary.right.literal.number);
+}
+
+test "parse simple pipeline: 5 |> 10" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const tokens = [_]Token{
+        Token{ .type = .NUMBER, .lexeme = "5", .literal = .{ .number = 5.0 }, .line = 1, .column = 1 },
+        Token{ .type = .PIPE, .lexeme = "|>", .literal = null, .line = 1, .column = 3 },
+        Token{ .type = .NUMBER, .lexeme = "10", .literal = .{ .number = 10.0 }, .line = 1, .column = 6 },
+        Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 8 },
+    };
+
+    var program = try parse(&tokens, a);
+    defer program.deinit();
+
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+    const expr = program.expressions[0];
+    try testing.expect(expr == .pipe);
+
+    const pipe = expr.pipe;
+    try testing.expect(pipe.left.* == .literal);
+    try testing.expectEqual(@as(f64, 5.0), pipe.left.literal.number);
+    try testing.expect(pipe.right.* == .literal);
+    try testing.expectEqual(@as(f64, 10.0), pipe.right.literal.number);
+}
+
+test "parse policy unary: x := ?5" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const tokens = [_]Token{
+        Token{ .type = .IDENTIFIER, .lexeme = "x", .literal = null, .line = 1, .column = 1 },
+        Token{ .type = .COLON_EQUAL, .lexeme = ":=", .literal = null, .line = 1, .column = 3 },
+        Token{ .type = .QUESTION, .lexeme = "?", .literal = null, .line = 1, .column = 6 },
+        Token{ .type = .NUMBER, .lexeme = "5", .literal = .{ .number = 5.0 }, .line = 1, .column = 7 },
+        Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 8 },
+    };
+
+    var program = try parse(&tokens, a);
+    defer program.deinit();
+
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+    const stmt = program.expressions[0];
+    try testing.expect(stmt == .assignment);
+
+    const assign = stmt.assignment;
+    try testing.expectEqualStrings("x", assign.name);
+
+    try testing.expect(assign.value.* == .policy);
+    try testing.expectEqual(Ast.PolicyValue.unwrap_or_none, assign.value.policy.policy);
+    try testing.expect(assign.value.policy.expr.* == .literal);
+    try testing.expectEqual(@as(f64, 5.0), assign.value.policy.expr.literal.number);
+}
+
+test "parse pipeline with policies: ?5 |> !10 |> ^7" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const tokens = [_]Token{
+        Token{ .type = .QUESTION, .lexeme = "?", .literal = null, .line = 1, .column = 1 },
+        Token{ .type = .NUMBER, .lexeme = "5", .literal = .{ .number = 5.0 }, .line = 1, .column = 2 },
+        Token{ .type = .PIPE, .lexeme = "|>", .literal = null, .line = 1, .column = 4 },
+        Token{ .type = .BANG, .lexeme = "!", .literal = null, .line = 1, .column = 7 },
+        Token{ .type = .NUMBER, .lexeme = "10", .literal = .{ .number = 10.0 }, .line = 1, .column = 8 },
+        Token{ .type = .PIPE, .lexeme = "|>", .literal = null, .line = 1, .column = 11 },
+        Token{ .type = .CARET, .lexeme = "^", .literal = null, .line = 1, .column = 14 },
+        Token{ .type = .NUMBER, .lexeme = "7", .literal = .{ .number = 7.0 }, .line = 1, .column = 15 },
+        Token{ .type = .EOF, .lexeme = "", .literal = null, .line = 1, .column = 16 },
+    };
+
+    var program = try parse(&tokens, a);
+    defer program.deinit();
+
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+    const expr = program.expressions[0];
+
+    try testing.expect(expr == .pipe);
+    const outer_pipe = expr.pipe;
+
+    // Outer right: ^7
+    try testing.expect(outer_pipe.right.* == .policy);
+    try testing.expectEqual(Ast.PolicyValue.keep_wrapped, outer_pipe.right.policy.policy);
+    try testing.expect(outer_pipe.right.policy.expr.* == .literal);
+    try testing.expectEqual(@as(f64, 7.0), outer_pipe.right.policy.expr.literal.number);
+
+    // Left side: ?5 |> !10
+    try testing.expect(outer_pipe.left.* == .pipe);
+    const inner_pipe = outer_pipe.left.pipe;
+
+    try testing.expect(inner_pipe.left.* == .policy);
+    try testing.expectEqual(Ast.PolicyValue.unwrap_or_none, inner_pipe.left.policy.policy);
+    try testing.expect(inner_pipe.left.policy.expr.* == .literal);
+    try testing.expectEqual(@as(f64, 5.0), inner_pipe.left.policy.expr.literal.number);
+
+    try testing.expect(inner_pipe.right.* == .policy);
+    try testing.expectEqual(Ast.PolicyValue.panic_on_error, inner_pipe.right.policy.policy);
+    try testing.expect(inner_pipe.right.policy.expr.* == .literal);
+    try testing.expectEqual(@as(f64, 10.0), inner_pipe.right.policy.expr.literal.number);
 }
