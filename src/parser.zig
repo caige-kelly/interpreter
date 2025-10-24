@@ -108,12 +108,18 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
 }
 
 fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    std.debug.print("parsePipeline start, current token: {any}\n", .{state.peek().type});
+
     var left = try parsEquality(state, allocator);
 
     while (state.match(.PIPE)) {
+        std.debug.print("Found |>, about to parse right side\n", .{});
+        std.debug.print("Current token before parseEquality: {any}\n", .{state.peek().type});
 
         skipNewlines(state);
         const right = try parsEquality(state, allocator);
+
+        std.debug.print("Parsed right side, current token: {any}\n", .{state.peek().type});
 
         const left_ptr = try allocator.create(Ast.Expr);
         left_ptr.* = left;
@@ -536,8 +542,26 @@ test "indented orphan expression errors" {
         \\x := 5
         \\  6
     ;
-    
+
     // The lexer should catch this error, not the parser!
     const result = Lexer.tokenize(source, arena.allocator());
     try testing.expectError(error.UnexpectedIndentation, result);
+}
+test "current" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x := "hello"
+        \\  |> y
+        \\  |> x
+    ;
+
+    const tokens = try Lexer.tokenize(source, arena.allocator());
+
+    std.debug.print("\nTokens after conversion:\n", .{});
+    for (tokens, 0..) |t, i| {
+        std.debug.print("  [{}] {any}\n", .{ i, t.type });
+    }
 }

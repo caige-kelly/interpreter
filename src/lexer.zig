@@ -132,11 +132,11 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                     }
                     // Valid continuation: operator BEFORE newline OR operator AFTER indent
                     else if ((prev_type == .PIPE or prev_type == .PLUS or
-                             prev_type == .MINUS or prev_type == .STAR or
-                             prev_type == .SLASH or prev_type == .DOT) or
-                            (after_indent == .PIPE or after_indent == .PLUS or
-                             after_indent == .MINUS or after_indent == .STAR or
-                             after_indent == .SLASH or after_indent == .DOT))
+                        prev_type == .MINUS or prev_type == .STAR or
+                        prev_type == .SLASH or prev_type == .DOT) or
+                        (after_indent == .PIPE or after_indent == .PLUS or
+                            after_indent == .MINUS or after_indent == .STAR or
+                            after_indent == .SLASH or after_indent == .DOT))
                     {
                         i += 2; // Skip NEWLINE and INDENT - continuation is OK
                         continue;
@@ -146,16 +146,18 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                         return error.UnexpectedIndentation;
                     }
                 } else {
-                    // For non-indented newlines: check if previous token is a continuation operator
-                    if (prev_type == .PLUS or prev_type == .MINUS or 
-                        prev_type == .STAR or prev_type == .SLASH or
-                        prev_type == .PIPE or prev_type == .DOT or
-                        prev_type == .COLON_EQUAL or prev_type == .COLON or
-                        prev_type == .EQUAL) {
-                        // Don't add newline after continuation operators
+                    // NO INDENT - check what's AFTER the newline
+                    const next_type = if (i + 1 < tokens.len) tokens[i + 1].type else TokenType.EOF;
+
+                    // Skip newline if next token is a continuation operator
+                    if (next_type == .PIPE or next_type == .PLUS or
+                        next_type == .MINUS or next_type == .STAR or
+                        next_type == .SLASH or next_type == .DOT)
+                    {
                         i += 1;
                         continue;
                     }
+
                     // Keep newline for statement separation
                     try result.append(allocator, token);
                     i += 1;
@@ -557,14 +559,14 @@ test "tokenize indent/dedent matching - if block" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    
+
     const source =
         \\if true ->
         \\  x := 5
         \\  y := 10   // VALID: inside a block
         \\z := 15
     ;
-    
+
     const tokens = try tokenize(source, arena.allocator());
     // Should have BLOCK_START after ->, statements inside, BLOCK_END before z
     try testing.expect(tokens.len > 0);
@@ -574,13 +576,13 @@ test "tokenize multiple statements" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    
+
     const source =
         \\x := 5
         \\y := 10    // VALID: same indentation level
         \\z := 15
     ;
-    
+
     const tokens = try tokenize(source, arena.allocator());
     try testing.expect(tokens.len > 0);
 }
@@ -589,12 +591,12 @@ test "tokenize invalid orphan indentation" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    
+
     const source =
         \\x := 5
         \\  y := 10   // INVALID: orphan indented statement
     ;
-    
+
     const result = tokenize(source, arena.allocator());
     try testing.expectError(error.UnexpectedIndentation, result);
 }
