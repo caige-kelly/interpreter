@@ -25,6 +25,8 @@ pub fn main() !void {
         try commands.versionCommand();
     } else if (std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
         printUsage();
+    } else if (std.mem.eql(u8, command, "repl")) {
+        try commands.replCommand(allocator);
     } else {
         std.debug.print("Unknown command: {s}\n\n", .{command});
         printUsage();

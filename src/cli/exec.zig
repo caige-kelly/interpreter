@@ -2,6 +2,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const sys = @import("../system.zig");
 const Supervisor = @import("../supervisor.zig").Supervisor;
+const SupervisionResult = @import("../supervisor.zig").SupervisionResult;
+const Value = @import("../evaluator.zig").Value;
 
 pub const ExecOptions = struct {
     trace: bool = true,
@@ -74,7 +76,7 @@ fn executeScript(allocator: Allocator, path: []const u8, options: ExecOptions) !
         path,
         10 * 1024 * 1024, // Max 10MB file
     ) catch |err| {
-        std.debug.print("Error reading file '{s}': {}\n", .{ path, err });
+        std.debug.print("Error reading file '{s}': {any}\n", .{ path, err });
         std.process.exit(1);
     };
     defer allocator.free(source);
@@ -102,7 +104,7 @@ fn executeScript(allocator: Allocator, path: []const u8, options: ExecOptions) !
     const start_time = try std.time.Instant.now();
 
     var result = supervisor.run(source) catch |err| {
-        std.debug.print("Error executing script: {}\n", .{err});
+        std.debug.print("Error executing script: {any}\n", .{err});
         std.process.exit(1);
     };
     defer result.deinit();
@@ -110,8 +112,14 @@ fn executeScript(allocator: Allocator, path: []const u8, options: ExecOptions) !
     const end_time = try std.time.Instant.now();
     const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
 
+    // Buffered stdout writer
+    var out_buf: [4096]u8 = undefined;
+    var file_stdout_writer = std.fs.File.stdout().writer(&out_buf);
+    const stdout: *std.Io.Writer = &file_stdout_writer.interface;
+
     // Print results
-    printResult(result, duration_ms, options.quiet);
+    try printSupervisionResult(stdout, result, duration_ms, options.quiet);
+    try stdout.flush();
 
     // Exit with appropriate code
     const exit_code: u8 = switch (result.status) {
@@ -121,65 +129,75 @@ fn executeScript(allocator: Allocator, path: []const u8, options: ExecOptions) !
     std.process.exit(exit_code);
 }
 
-fn printResult(result: anytype, duration_ms: u64, quiet: bool) void {
-    // Always print the value to stdout (unless there's an error)
-    if (result.status == .success) {
-        if (result.final_value) |value| {
-            printValue(value);
-            std.debug.print("\n", .{});
-        }
-    }
-
-    // Only print diagnostics if not quiet
-    if (!quiet) {
-        std.debug.print("\n", .{});
-        std.debug.print("─────────────────────────────────────────\n", .{});
-
-        switch (result.status) {
-            .success => {
-                std.debug.print("✓ Status: SUCCESS\n", .{});
-            },
-            .failed_max_restarts => {
-                std.debug.print("✗ Status: FAILED (max restarts exceeded)\n", .{});
-                if (result.last_error) |err| {
-                    std.debug.print("  Error: {}\n", .{err});
+fn printValue(writer: *std.Io.Writer, value: Value) !void {
+    switch (value) {
+        .number => |n| try writer.print("{d}", .{n}),
+        .string => |s| try writer.print("\"{s}\"", .{s}),
+        .boolean => |b| try writer.print("{}", .{b}),
+        .none => try writer.print("none", .{}),
+        .result => |r| {
+            if (r.isOk()) {
+                if (r.value) |val| {
+                    try writer.print("Ok(", .{});
+                    try printValue(writer, val); // Remove the .* here
+                    try writer.print(")", .{});
+                } else {
+                    try writer.print("Ok(none)", .{});
                 }
-            },
-            .eval_error => {
-                std.debug.print("✗ Status: EVAL ERROR\n", .{});
-                if (result.last_error) |err| {
-                    std.debug.print("  Error: {}\n", .{err});
+            } else {
+                if (r.err_msg) |msg| {
+                    try writer.print("Err(\"{s}\")", .{msg});
+                } else {
+                    try writer.print("Err(unknown)", .{});
                 }
-            },
-            .parse_error => {
-                std.debug.print("✗ Status: PARSE ERROR\n", .{});
-                if (result.last_error) |err| {
-                    std.debug.print("  Error: {}\n", .{err});
-                }
-            },
-            .timeout => {
-                std.debug.print("✗ Status: TIMEOUT\n", .{});
-            },
-        }
-
-        std.debug.print("  Attempts: {d}\n", .{result.attempts});
-        std.debug.print("  Duration: {d}ms\n", .{duration_ms});
-
-        if (result.trace) |trace| {
-            std.debug.print("  Trace entries: {d}\n", .{trace.len});
-        }
-
-        std.debug.print("─────────────────────────────────────────\n", .{});
+            }
+        },
     }
 }
 
-fn printValue(value: anytype) void {
-    switch (value) {
-        .number => |n| std.debug.print("{d}", .{n}),
-        .string => |s| std.debug.print("{s}", .{s}),
-        .boolean => |b| std.debug.print("{}", .{b}),
-        .none => std.debug.print("none", .{}),
-        .result => |r| std.debug.print("{any}", .{r}),
+fn printSupervisionResult(writer: *std.Io.Writer, result: SupervisionResult, duration_ms: u64, quiet: bool) !void {
+    if (quiet) {
+        // Only print the value
+        if (result.final_value) |value| {
+            try printValue(writer, value);
+            try writer.print("\n", .{});
+        }
+        return;
+    }
+
+    // Print detailed results
+    switch (result.status) {
+        .success => {
+            try writer.print("Success!\n", .{});
+            if (result.final_value) |value| {
+                try writer.print("Result: ", .{});
+                try printValue(writer, value);
+                try writer.print("\n", .{});
+            }
+            try writer.print("Duration: {}ms\n", .{duration_ms});
+            try writer.print("Attempts: {}\n", .{result.attempts});
+        },
+        .parse_error => {
+            try writer.print("Parse Error!\n", .{});
+            if (result.last_error) |err| {
+                try writer.print("Error: {s}\n", .{err});
+            }
+        },
+        .eval_error => {
+            try writer.print("Evaluation Error!\n", .{});
+            if (result.last_error) |err| {
+                try writer.print("Error: {s}\n", .{err});
+            }
+        },
+        .failed_max_restarts => {
+            try writer.print("Failed after {} attempts\n", .{result.attempts});
+            if (result.last_error) |err| {
+                try writer.print("Last error: {s}\n", .{err});
+            }
+        },
+        .timeout => {
+            try writer.print("Timeout!\n", .{});
+        },
     }
 }
 

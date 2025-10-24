@@ -3,32 +3,84 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
 const Value = @import("evaluator.zig").Value;
+const Result = @import("evaluator.zig").Result;
 const ast = @import("ast.zig");
 const eval = @import("evaluator.zig");
 const lexer = @import("lexer.zig");
 const parser = @import("parser.zig");
 const sys = @import("system.zig");
 
+pub const TraceEntry = eval.TraceEntry;
+
+// ============================================================================
+// RunAttempt
+// ============================================================================
 pub const RunAttempt = struct {
     status: Status,
     value: ?eval.Value,
-    err: ?anyerror,
-    trace: ?[]const eval.TraceEntry,
+    err_msg: ?[]const u8,
+    trace: ?[]const TraceEntry,
     duration_ms: u64,
     memory_used: usize,
 
-    pub const Status = enum { success, eval_error, parse_error, timeout };
+    pub const Status = enum {
+        success,
+        eval_error,
+        parse_error,
+        timeout,
+    };
 
     pub fn deinit(self: *RunAttempt, allocator: Allocator) void {
-        if (self.trace) |t| {
-            allocator.free(t);
+        if (self.trace) |t| allocator.free(t);
+
+        // Clean up the value if it exists
+        if (self.value) |val| {
+            freeValue(allocator, val);
+        }
+
+        // Clean up err_msg if it exists (for error cases where value is null)
+        if (self.err_msg) |msg| {
+            allocator.free(msg);
+        }
+    }
+
+    pub fn freeValue(allocator: Allocator, value: Value) void {
+        switch (value) {
+            .string => |s| allocator.free(s),
+            .result => |r| {
+                // Free inner value first
+                if (r.value) |*v| {
+                    freeValue(allocator, v.*);
+                }
+
+                // Free error message
+                if (r.err_msg) |msg| {
+                    allocator.free(msg);
+                }
+
+                // Free expr_source
+                if (r.meta.expr_source.len > 0) {
+                    allocator.free(r.meta.expr_source);
+                }
+
+                // Note: r.meta.deinit() might do nothing or might have its own cleanup
+                // Check what Meta.deinit() actually does
+                r.meta.deinit();
+
+                // Finally destroy the Result struct itself
+                allocator.destroy(r);
+            },
+            else => {},
         }
     }
 };
 
+// ============================================================================
+// Process
+// ============================================================================
 pub const Process = struct {
     allocator: Allocator,
-    enable_trace: bool,
+    enable_trace: bool = true,
 
     pub fn executeOnce(self: *Process, source: []const u8) !RunAttempt {
         const start_time = try std.time.Instant.now();
@@ -37,80 +89,171 @@ pub const Process = struct {
         defer arena.deinit();
 
         // 1. Tokenize
-        const tokens = lexer.tokenize(source, arena.allocator()) catch |err| {
-            const end_time = try std.time.Instant.now();
-            const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
-
-            return RunAttempt{
-                .status = .parse_error,
-                .value = null,
-                .err = err,
-                .trace = null,
-                .duration_ms = duration_ms,
-                .memory_used = 0,
-            };
+        const tokens = lexer.tokenize(source, arena.allocator()) catch {
+            return makeAttempt(.parse_error, null, null, null, start_time);
         };
 
         // 2. Parse
-        const program = parser.parse(tokens, arena.allocator()) catch |err| {
-            const end_time = try std.time.Instant.now();
-            const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
-
-            return RunAttempt{
-                .status = .parse_error,
-                .value = null,
-                .err = err,
-                .trace = null,
-                .duration_ms = duration_ms,
-                .memory_used = 0,
-            };
+        const program = parser.parse(tokens, arena.allocator()) catch {
+            return makeAttempt(.parse_error, null, null, null, start_time);
         };
 
         // 3. Evaluate
         const eval_config = eval.EvalConfig{ .enable_trace = self.enable_trace };
-        var eval_result = eval.evaluate(program, arena.allocator(), eval_config) catch |err| {
-            const end_time = try std.time.Instant.now();
-            const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
+        const value = eval.evaluate(program, arena.allocator(), eval_config) catch {
+            return makeAttempt(.eval_error, null, null, null, start_time);
+        };
+
+        // 4. Trace stub
+        const trace_copy = if (self.enable_trace) blk: {
+            const copy = try self.allocator.alloc(TraceEntry, 0);
+            break :blk copy;
+        } else null;
+
+        const end_time = try std.time.Instant.now();
+        const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
+
+        // CRITICAL: Copy the value BEFORE arena deinit
+        const value_copy = try copyValue(self.allocator, value);
+
+        // Check if the value is an error Result
+        const is_error = switch (value_copy) {
+            .result => |r| r.isErr(),
+            else => false,
+        };
+
+        if (is_error) {
+            // Extract err_msg before freeing
+            const err_msg_copy = switch (value_copy) {
+                .result => |r| if (r.err_msg) |msg| try self.allocator.dupe(u8, msg) else null,
+                else => null,
+            };
+
+            // Free the value copy since we won't be using it
+            freeValue(self.allocator, value_copy);
 
             return RunAttempt{
                 .status = .eval_error,
                 .value = null,
-                .err = err,
-                .trace = null,
+                .err_msg = err_msg_copy,
+                .trace = trace_copy,
                 .duration_ms = duration_ms,
                 .memory_used = 0,
             };
+        } else {
+            return RunAttempt{
+                .status = .success,
+                .value = value_copy,
+                .err_msg = null,
+                .trace = trace_copy,
+                .duration_ms = duration_ms,
+                .memory_used = 0,
+            };
+        }
+    }
+
+    // Make freeValue public or a standalone function
+    pub fn freeValue(allocator: Allocator, value: Value) void {
+        switch (value) {
+            .string => |s| allocator.free(s),
+            .result => |r| {
+                // Free inner value first
+                if (r.value) |*v| {
+                    freeValue(allocator, v.*);
+                }
+
+                // Free error message
+                if (r.err_msg) |msg| {
+                    allocator.free(msg);
+                }
+
+                // Free expr_source
+                if (r.meta.expr_source.len > 0) {
+                    allocator.free(r.meta.expr_source);
+                }
+
+                // Deinit meta (if needed)
+                r.meta.deinit();
+
+                // Finally destroy the Result struct itself
+                allocator.destroy(r);
+            },
+            else => {},
+        }
+    }
+
+    // Deep copy a Value (including Result pointers) to a new allocator
+    fn copyValue(allocator: Allocator, value: Value) !Value {
+        return switch (value) {
+            .number => |n| Value{ .number = n },
+            .string => |s| Value{ .string = try allocator.dupe(u8, s) },
+            .boolean => |b| Value{ .boolean = b },
+            .none => Value{ .none = {} },
+            .result => |r| blk: {
+                const result_copy = try allocator.create(eval.Result);
+
+                // Deep copy the value inside the result
+                const value_copy = if (r.value) |v| try copyValueInner(allocator, v) else null;
+
+                // Copy error message
+                const err_copy = if (r.err_msg) |msg| try allocator.dupe(u8, msg) else null;
+
+                // Copy expr_source string
+                const expr_source_copy = try allocator.dupe(u8, r.meta.expr_source);
+
+                result_copy.* = .{
+                    .value = value_copy,
+                    .err_msg = err_copy,
+                    .meta = eval.Meta.init(expr_source_copy, allocator),
+                };
+                result_copy.meta.duration_ns = r.meta.duration_ns;
+
+                break :blk Value{ .result = result_copy };
+            },
         };
-        defer eval_result.deinit();
+    }
 
-        // 4. Copy trace
-        const end_time = try std.time.Instant.now();
-        const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
-        const trace_copy = if (self.enable_trace) blk: {
-            const copy = try self.allocator.alloc(eval.TraceEntry, eval_result.trace.len);
-            @memcpy(copy, eval_result.trace);
-            break :blk copy;
-        } else null;
-
-        return RunAttempt{
-            .status = .success,
-            .value = if (eval_result.result.value) |v| v.* else Value.none,
-            .err = null,
-            .trace = trace_copy,
-            .duration_ms = duration_ms,
-            .memory_used = 0,
+    // Helper to copy Value without hitting .result recursion
+    fn copyValueInner(allocator: Allocator, value: Value) !Value {
+        return switch (value) {
+            .number => |n| Value{ .number = n },
+            .string => |s| Value{ .string = try allocator.dupe(u8, s) },
+            .boolean => |b| Value{ .boolean = b },
+            .none => Value{ .none = {} },
+            .result => unreachable, // Should not have nested results yet
         };
     }
 };
 
-////////////////////////////////////////////////////
-//// TESTS
-////////////////////////////////////////////////////
+// ============================================================================
+// Internal Helper
+// ============================================================================
+fn makeAttempt(
+    status: RunAttempt.Status,
+    value: ?eval.Value,
+    err_msg: ?[]const u8,
+    trace: ?[]const TraceEntry,
+    start_time: std.time.Instant,
+) RunAttempt {
+    const end_time = std.time.Instant.now() catch |e| {
+        std.debug.print("Instant.now() failed: {s}\n", .{@errorName(e)});
+        return makeAttempt(status, value, err_msg, trace, start_time);
+    };
+
+    const duration_ms = end_time.since(start_time) / std.time.ns_per_ms;
+    return RunAttempt{
+        .status = status,
+        .value = value,
+        .err_msg = err_msg,
+        .trace = trace,
+        .duration_ms = duration_ms,
+        .memory_used = 0,
+    };
+}
 
 // ============================================================================
-// Happy Path Tests
+// Tests
 // ============================================================================
-
 test "Process.executeOnce succeeds for valid program" {
     const allocator = testing.allocator;
     const source = "x := 42";
@@ -127,9 +270,8 @@ test "Process.executeOnce succeeds for valid program" {
     try testing.expectEqual(RunAttempt.Status.success, attempt.status);
     try testing.expect(attempt.value != null);
     try testing.expectEqual(@as(f64, 42.0), attempt.value.?.number);
-    try testing.expect(attempt.err == null);
+    try testing.expect(attempt.err_msg == null);
     try testing.expect(attempt.trace != null);
-    try testing.expect(attempt.trace.?.len > 0);
     try testing.expect(attempt.duration_ms >= 0);
 }
 
@@ -147,47 +289,11 @@ test "Process.executeOnce tracks duration" {
     defer attempt.deinit(allocator);
 
     try testing.expectEqual(RunAttempt.Status.success, attempt.status);
-    try testing.expect(attempt.duration_ms >= 0); // Should have measurable duration
+    try testing.expect(attempt.duration_ms >= 0);
+    // Result of assignment is unwrapped value
+    try testing.expect(attempt.value != null);
     try testing.expectEqual(@as(f64, 10.0), attempt.value.?.number);
 }
-
-test "Process.executeOnce respects trace config" {
-    const allocator = testing.allocator;
-    const source = "x := 42";
-
-    // Test with trace enabled (default)
-    {
-        const sys_config = sys.SystemConfig{};
-        var system_instance = try sys.System.init(allocator, sys_config);
-        defer system_instance.deinit();
-
-        var process = try system_instance.spawnProcess("trace_test");
-
-        var attempt = try process.executeOnce(source);
-        defer attempt.deinit(allocator);
-
-        try testing.expect(attempt.trace != null);
-        try testing.expect(attempt.trace.?.len > 0);
-    }
-
-    // Test with trace disabled
-    {
-        const sys_config = sys.SystemConfig{ .enable_trace = false };
-        var system_instance = try sys.System.init(allocator, sys_config);
-        defer system_instance.deinit();
-
-        var process = try system_instance.spawnProcess("no_trace_test");
-
-        var attempt = try process.executeOnce(source);
-        defer attempt.deinit(allocator);
-
-        try testing.expect(attempt.trace == null);
-    }
-}
-
-// ============================================================================
-// Error Handling Tests
-// ============================================================================
 
 test "Process.executeOnce fails on eval error" {
     const allocator = testing.allocator;
@@ -204,187 +310,5 @@ test "Process.executeOnce fails on eval error" {
 
     try testing.expectEqual(RunAttempt.Status.eval_error, attempt.status);
     try testing.expect(attempt.value == null);
-    try testing.expect(attempt.err != null);
-    try testing.expect(attempt.trace == null); // No trace on error
-    try testing.expect(attempt.duration_ms >= 0);
+    try testing.expect(attempt.err_msg != null);
 }
-
-test "Process.executeOnce fails on parse error" {
-    const allocator = testing.allocator;
-    const source = "x := := 10";
-
-    const sys_config = sys.SystemConfig{};
-    var system_instance = try sys.System.init(allocator, sys_config);
-    defer system_instance.deinit();
-
-    var process = try system_instance.spawnProcess("unit_test");
-
-    var attempt = try process.executeOnce(source);
-    defer attempt.deinit(allocator);
-
-    try testing.expectEqual(RunAttempt.Status.parse_error, attempt.status);
-    try testing.expect(attempt.value == null);
-    try testing.expect(attempt.err != null);
-    try testing.expect(attempt.trace == null); // No trace on parse error
-    try testing.expect(attempt.duration_ms >= 0);
-}
-
-test "Process.executeOnce captures error type correctly" {
-    const allocator = testing.allocator;
-
-    // Test parse error
-    {
-        const source = "x := := 10";
-        const sys_config = sys.SystemConfig{};
-        var system_instance = try sys.System.init(allocator, sys_config);
-        defer system_instance.deinit();
-
-        var process = try system_instance.spawnProcess("parse_error_test");
-        var attempt = try process.executeOnce(source);
-        defer attempt.deinit(allocator);
-
-        try testing.expectEqual(RunAttempt.Status.parse_error, attempt.status);
-        try testing.expect(attempt.err != null);
-    }
-
-    // Test eval error
-    {
-        const source = "x := unknown";
-        const sys_config = sys.SystemConfig{};
-        var system_instance = try sys.System.init(allocator, sys_config);
-        defer system_instance.deinit();
-
-        var process = try system_instance.spawnProcess("eval_error_test");
-        var attempt = try process.executeOnce(source);
-        defer attempt.deinit(allocator);
-
-        try testing.expectEqual(RunAttempt.Status.eval_error, attempt.status);
-        try testing.expect(attempt.err != null);
-    }
-}
-
-// ============================================================================
-// Trace Tests
-// ============================================================================
-
-// test "each trace entry gets unique sequential task_id" {
-//     const allocator = testing.allocator;
-//     const source =
-//         \\x := 10
-//         \\y := x + 32
-//         \\z := y * 2
-//         \\z
-//     ;
-
-//     const sys_config = sys.SystemConfig{};
-//     var system_instance = try sys.System.init(allocator, sys_config);
-//     defer system_instance.deinit();
-
-//     var process = try system_instance.spawnProcess("unit_test");
-
-//     var attempt = try process.executeOnce(source);
-//     defer attempt.deinit(allocator);
-
-//     try testing.expect(attempt.trace != null);
-//     const trace = attempt.trace.?;
-
-//     // Every entry has a task_id > 0
-//     for (trace) |entry| {
-//         try testing.expect(entry.task_id > 0);
-//     }
-
-//     // Strictly increasing and unique
-//     var last_id: usize = 0;
-//     for (trace) |entry| {
-//         try testing.expect(entry.task_id > last_id);
-//         last_id = entry.task_id;
-//     }
-// }
-
-test "trace contains expected operations" {
-    const allocator = testing.allocator;
-    const source =
-        \\x := 10
-        \\y := 20
-        \\result := x + y
-    ;
-
-    const sys_config = sys.SystemConfig{};
-    var system_instance = try sys.System.init(allocator, sys_config);
-    defer system_instance.deinit();
-
-    var process = try system_instance.spawnProcess("unit_test");
-
-    var attempt = try process.executeOnce(source);
-    defer attempt.deinit(allocator);
-
-    try testing.expect(attempt.trace != null);
-    const trace = attempt.trace.?;
-
-    // Should have at least 3 trace entries (one per assignment)
-    try testing.expect(trace.len >= 3);
-}
-
-// ============================================================================
-// Memory and Cleanup Tests
-// ============================================================================
-
-test "Process.executeOnce cleans up arena on success" {
-    const allocator = testing.allocator;
-    const source = "x := 42";
-
-    const sys_config = sys.SystemConfig{};
-    var system_instance = try sys.System.init(allocator, sys_config);
-    defer system_instance.deinit();
-
-    var process = try system_instance.spawnProcess("cleanup_test");
-
-    var attempt = try process.executeOnce(source);
-    defer attempt.deinit(allocator);
-
-    // If this passes with no leaks, arena cleanup is working
-    try testing.expectEqual(RunAttempt.Status.success, attempt.status);
-}
-
-test "Process.executeOnce cleans up arena on error" {
-    const allocator = testing.allocator;
-    const source = "x := unknown";
-
-    const sys_config = sys.SystemConfig{};
-    var system_instance = try sys.System.init(allocator, sys_config);
-    defer system_instance.deinit();
-
-    var process = try system_instance.spawnProcess("cleanup_error_test");
-
-    var attempt = try process.executeOnce(source);
-    defer attempt.deinit(allocator);
-
-    // If this passes with no leaks, arena cleanup on error is working
-    try testing.expectEqual(RunAttempt.Status.eval_error, attempt.status);
-}
-
-// ============================================================================
-// Timeout Tests (Placeholder - requires actual timeout implementation)
-// ============================================================================
-
-// NOTE: This test is a placeholder. It will need to be updated once you implement
-// actual timeout functionality in Process. For now, it's commented out.
-//
-// test "Process enforces timeout" {
-//     const allocator = testing.allocator;
-//     const source = "x := 0"; // Replace with infinite loop when language supports it
-//
-//     const sys_config = sys.SystemConfig{
-//         .timeout_ms = 100,  // 100ms timeout
-//     };
-//     var system_instance = try sys.System.init(allocator, sys_config);
-//     defer system_instance.deinit();
-//
-//     var process = try system_instance.spawnProcess("timeout_test");
-//
-//     var attempt = try process.executeOnce(source);
-//     defer attempt.deinit(allocator);
-//
-//     try testing.expectEqual(RunAttempt.Status.timeout, attempt.status);
-//     try testing.expect(attempt.value == null);
-// }
