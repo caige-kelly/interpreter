@@ -399,3 +399,25 @@ test "tokenize string literal" {
     try testing.expectEqualStrings("hello world", tokens[0].literal.?.string);
     try testing.expectEqual(TokenType.EOF, tokens[1].type);
 }
+
+test "tokenize multiline with indentation" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source = 
+        \\x := 5
+        \\  y := 10
+    ;
+    
+    const tokens = try tokenize(source, arena.allocator());
+    
+    // Print what we got
+    std.debug.print("\nGot {} tokens:\n", .{tokens.len});
+    for (tokens, 0..) |token, i| {
+        std.debug.print("  [{d}] {any} '{s}'\n", .{i, token.type, token.lexeme});
+    }
+    
+    // What we expect:
+    // x, :=, 5, NEWLINE, INDENT, y, :=, 10, DEDENT(?), EOF
+}
