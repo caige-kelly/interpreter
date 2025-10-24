@@ -80,9 +80,9 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         return expr;
     }
 
-    skipNewlines(state);
     const value = try parsePipeline(state, allocator);
 
+    std.debug.print("token: {any}", .{value});
     switch (expr) {
         .identifier => |name| {
             const value_ptr = try allocator.create(Ast.Expr);
