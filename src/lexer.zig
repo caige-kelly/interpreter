@@ -69,6 +69,18 @@ pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
     }
 
     // Add EOF token
+    // Before adding EOF token
+    while (indent_stack.items.len > 1) {
+        _ = indent_stack.pop();
+        try tokens.append(allocator, .{
+            .type = .DEDENT,
+            .lexeme = "",
+            .line = state.line,
+            .column = state.column,
+            .literal = null,
+        });
+    }
+
     state.start = state.current;
     state.start_column = state.column;
     try makeToken(&state, &tokens, allocator, .EOF, .none);
@@ -405,19 +417,40 @@ test "tokenize multiline with indentation" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const source = 
+    const source =
         \\x := 5
-        \\  y := 10
+        \\  5
     ;
-    
+
     const tokens = try tokenize(source, arena.allocator());
-    
+
     // Print what we got
     std.debug.print("\nGot {} tokens:\n", .{tokens.len});
     for (tokens, 0..) |token, i| {
-        std.debug.print("  [{d}] {any} '{s}'\n", .{i, token.type, token.lexeme});
+        std.debug.print("  [{d}] {any} '{s}'\n", .{ i, token.type, token.lexeme });
     }
-    
+
     // What we expect:
     // x, :=, 5, NEWLINE, INDENT, y, :=, 10, DEDENT(?), EOF
+}
+
+test "tokenize indent/dedent matching" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const source =
+        \\x := 5
+        \\  y := 10
+        \\z := 15
+    ;
+
+    const tokens = try tokenize(source, arena.allocator());
+    // Print what we got
+    std.debug.print("\nGot {} tokens:\n", .{tokens.len});
+    for (tokens, 0..) |token, i| {
+        std.debug.print("  [{d}] {any} '{s}'\n", .{ i, token.type, token.lexeme });
+    }
+
+    // Should be: x := 5 NEWLINE INDENT y := 10 NEWLINE DEDENT z := 15
+    // Check if DEDENT appears!
 }

@@ -4,6 +4,7 @@ const Token = @import("token.zig").Token;
 const TokenType = @import("token.zig").TokenType;
 const Ast = @import("ast.zig");
 const Type = @import("ast.zig").Type;
+const Lexer = @import("lexer.zig");
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -49,7 +50,9 @@ pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
         if (state.isAtEnd()) break;
 
         const expr = try parseAssignment(&state, allocator);
+        std.debug.print("expr {any}\n", .{expr});
         try exprs.append(allocator, expr);
+        
     }
 
     return Ast.Program{
@@ -80,29 +83,50 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         return expr;
     }
 
-    const value = try parsePipeline(state, allocator);
+    while (!state.isAtEnd()) {
 
-    std.debug.print("token: {any}", .{value});
-    switch (expr) {
-        .identifier => |name| {
-            const value_ptr = try allocator.create(Ast.Expr);
-            value_ptr.* = value;
-            return Ast.Expr{
-                .assignment = .{
-                    .name = name,
-                    .type = explicit_type,
-                    .value = value_ptr,
-                },
-            };
-        },
-        else => return error.InvalidAssignmentTarget,
+        std.debug.print("next token {any}\n", .{state.peek()});
+
+        if (state.match(.INDENT) or state.match(.NEWLINE)) {
+            continue;
+        }
+
+        const value = try parsePipeline(state, allocator);
+
+        if (state.match(.INDENT) or state.match(.NEWLINE)) {
+            continue;
+        }
+
+        if (!state.match(.DEDENT)) {
+            return error.InvalidExpression;
+        } 
+
+        switch (expr) {
+            .identifier => |name| {
+                const value_ptr = try allocator.create(Ast.Expr);
+                value_ptr.* = value;
+                return Ast.Expr{
+                    .assignment = .{
+                        .name = name,
+                        .type = explicit_type,
+                        .value = value_ptr,
+                    },
+                };
+            },
+            else => return error.InvalidAssignmentTarget,
+        }
     }
+
+    return expr;
 }
 
 fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     var left = try parsEquality(state, allocator);
 
     while (state.match(.PIPE)) {
+
+        std.debug.print("made it here\n", .{});
+        
         skipNewlines(state);
         const right = try parsEquality(state, allocator);
 
@@ -299,7 +323,7 @@ fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         .BOOLEAN => Ast.Expr{ .literal = token.literal.? },
         .NONE => Ast.Expr{ .literal = token.literal.? },
         .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
-        else => error.UnexpectedToken,
+        else => |t| {std.debug.print("token {any}\n", .{t}); return error.UnexpectedToken;},
     };
 }
 
@@ -310,6 +334,7 @@ fn parseTypeName(name: []const u8) !Type {
     if (std.mem.eql(u8, name, "none")) return .none;
     return error.UnknownType;
 }
+
 
 fn skipNewlines(state: *ParseState) void {
     while (state.peek().type == .NEWLINE) {
@@ -459,4 +484,45 @@ test "parse pipeline with policies: ?5 |> !10 |> ^7" {
     try testing.expectEqual(Ast.PolicyValue.panic_on_error, inner_pipe.right.policy.policy);
     try testing.expect(inner_pipe.right.policy.expr.* == .literal);
     try testing.expectEqual(@as(f64, 10.0), inner_pipe.right.policy.expr.literal.number);
+}
+
+test "parse pipeline with indentation" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x := 
+        \\  5 +
+        \\  5
+    ;
+
+    const tokens = try Lexer.tokenize(source, arena.allocator());
+    const program = try parse(tokens, arena.allocator());
+
+    // Should have 1 expression (the assignment)
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+
+    // The assignment value should be a pipeline
+    const assignment = program.expressions[0].assignment;
+    try testing.expect(assignment.value.* == .binary); // Pipeline is binary expr
+    //std.debug.print("value {any}\n",.{assignment.value.*});
+}
+
+test "assignment with pipeline continuation" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    
+    const source =
+        \\x := "hello"
+        \\  |> uppercase
+    ;
+    
+    // Tokenize first!
+    const tokens = try Lexer.tokenize(source, arena.allocator());
+    
+    // Then parse
+    const program = try parse(tokens, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
 }
