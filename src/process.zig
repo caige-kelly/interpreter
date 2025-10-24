@@ -100,7 +100,7 @@ pub const Process = struct {
 
         // 3. Evaluate
         const eval_config = eval.EvalConfig{ .enable_trace = self.enable_trace };
-        const value = eval.evaluate(program, arena.allocator(), eval_config) catch {
+        const value = eval.evaluate(program, arena.allocator(), eval_config, null) catch {
             return makeAttempt(.eval_error, null, null, null, start_time);
         };
 

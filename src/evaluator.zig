@@ -7,6 +7,103 @@ pub const EvalError = error{
     InternalFault,
 };
 
+// Add this near the top with your other type definitions
+pub const Environment = struct {
+    bindings: std.StringHashMap(Value),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) !Environment {
+        return Environment{
+            .bindings = std.StringHashMap(Value).init(allocator),
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *Environment) void {
+        // Free all stored values
+        var iter = self.bindings.iterator();
+        while (iter.next()) |entry| {
+            // Free the key (variable name was duplicated)
+            self.allocator.free(entry.key_ptr.*);
+            // Free the value if it contains allocated memory
+            freeValue(self.allocator, entry.value_ptr.*);
+        }
+        self.bindings.deinit();
+    }
+
+    pub fn set(self: *Environment, name: []const u8, value: Value) !void {
+        // Deep copy the value so it persists after arena cleanup
+        const value_copy = try self.copyValue(value);
+
+        // Check if variable already exists
+        if (self.bindings.get(name)) |old_value| {
+            // Free the old value
+            freeValue(self.allocator, old_value);
+            // Remove old key
+            var iter = self.bindings.iterator();
+            while (iter.next()) |entry| {
+                if (std.mem.eql(u8, entry.key_ptr.*, name)) {
+                    self.allocator.free(entry.key_ptr.*);
+                    break;
+                }
+            }
+        }
+
+        // Duplicate the name so it persists
+        const name_copy = try self.allocator.dupe(u8, name);
+        try self.bindings.put(name_copy, value_copy);
+    }
+
+    fn copyValue(self: *Environment, value: Value) !Value {
+        return switch (value) {
+            .number => |n| Value{ .number = n },
+            .boolean => |b| Value{ .boolean = b },
+            .none => Value{ .none = {} },
+            .string => |s| Value{ .string = try self.allocator.dupe(u8, s) },
+            .result => |r| {
+                const result_copy = try self.allocator.create(Result);
+
+                const value_copy = if (r.value) |v| try self.copyValue(v) else null;
+                const err_copy = if (r.err_msg) |msg| try self.allocator.dupe(u8, msg) else null;
+                const expr_source_copy = try self.allocator.dupe(u8, r.meta.expr_source);
+
+                result_copy.* = .{
+                    .value = value_copy,
+                    .err_msg = err_copy,
+                    .meta = Meta.init(expr_source_copy, self.allocator),
+                };
+                result_copy.meta.duration_ns = r.meta.duration_ns;
+
+                return Value{ .result = result_copy };
+            },
+        };
+    }
+
+    pub fn get(self: *Environment, name: []const u8) ?Value {
+        return self.bindings.get(name);
+    }
+
+    fn freeValue(allocator: std.mem.Allocator, value: Value) void {
+        switch (value) {
+            .string => |s| allocator.free(s),
+            .result => |r| {
+                if (r.value) |*v| {
+                    freeValue(allocator, v.*);
+                }
+                if (r.err_msg) |msg| {
+                    allocator.free(msg);
+                }
+                if (r.meta.expr_source.len > 0) {
+                    allocator.free(r.meta.expr_source);
+                }
+                r.meta.deinit();
+                allocator.destroy(r);
+            },
+            else => {},
+        }
+    }
+};
+
 // ============================================================================
 // Core Types
 // ============================================================================
@@ -125,7 +222,7 @@ pub const EvalConfig = struct {
 };
 
 const EvalState = struct {
-    globals: std.StringHashMap(Value),
+    globals: *Environment, // Changed from StringHashMap(Value) to *Environment
     allocator: std.mem.Allocator,
 };
 
@@ -133,14 +230,19 @@ pub fn evaluate(
     program: Ast.Program,
     allocator: std.mem.Allocator,
     config: EvalConfig,
+    env: ?*Environment,
 ) EvalError!Value {
     _ = config;
 
+    var temp_env = if (env == null) try Environment.init(allocator) else null;
+    defer if (temp_env) |*e| e.deinit();
+
+    const active_env = env orelse &temp_env.?;
+
     var state = EvalState{
-        .globals = std.StringHashMap(Value).init(allocator),
+        .globals = active_env, // Use the environment instead of a new hashmap
         .allocator = allocator,
     };
-    defer state.globals.deinit();
 
     var last_value = Value{ .none = {} };
 
@@ -182,9 +284,8 @@ fn evalLiteral(state: *EvalState, lit: Ast.Literal) EvalError!Value {
     return Value{ .result = result_ptr };
 }
 
-// "x" evaluates to the stored value (could be unwrapped or wrapped)
 fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
-    if (state.globals.get(name)) |val| {
+    if (state.globals.get(name)) |val| { // Now calls Environment.get()
         return val;
     }
 
@@ -194,9 +295,8 @@ fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
     return Value{ .result = result_ptr };
 }
 
-// "x := 5" evaluates RHS, unwraps it, stores unwrapped value, returns unwrapped value
 fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
-    if (state.globals.contains(assign.name)) {
+    if (state.globals.bindings.contains(assign.name)) { // Check if exists
         const result_ptr = try state.allocator.create(Result);
         result_ptr.* = Result.err("variable already defined", Meta.init("assignment", state.allocator));
         return Value{ .result = result_ptr };
@@ -218,8 +318,8 @@ fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
         else => rhs_value, // Already unwrapped
     };
 
-    // Store unwrapped value
-    try state.globals.put(assign.name, unwrapped_value);
+    // Store unwrapped value using Environment.set()
+    try state.globals.set(assign.name, unwrapped_value);
 
     // Return unwrapped value
     return unwrapped_value;
@@ -303,7 +403,7 @@ test "5 evaluates to Value{ .result = ok(5) }" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const value = try evaluate(program, arena.allocator(), .{});
+    const value = try evaluate(program, arena.allocator(), .{}, null); // Add null
 
     try testing.expect(value == .result);
     try testing.expect(value.result.isOk());
@@ -320,7 +420,7 @@ test "x := 5 evaluates to Value{ .number = 5 }" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const value = try evaluate(program, arena.allocator(), .{});
+    const value = try evaluate(program, arena.allocator(), .{}, null); // Add null
 
     try testing.expect(value == .number);
     try testing.expectEqual(@as(f64, 5.0), value.number);
