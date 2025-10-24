@@ -50,7 +50,6 @@ pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
         if (state.isAtEnd()) break;
 
         const expr = try parseAssignment(&state, allocator);
-        std.debug.print("expr {any}\n", .{expr});
         try exprs.append(allocator, expr);
     }
 
@@ -109,12 +108,9 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
 }
 
 fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    std.debug.print("parsePipeline start, current token: {any}\n", .{state.peek().type});
-
     var left = try parsEquality(state, allocator);
 
     while (state.match(.PIPE)) {
-        std.debug.print("Found |>, current token after: {any}\n", .{state.peek().type});
 
         skipNewlines(state);
         const right = try parsEquality(state, allocator);
@@ -132,7 +128,6 @@ fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
             },
         };
     }
-    std.debug.print("parsePipeline end, current token: {any}\n", .{state.peek().type});
 
     return left;
 }
@@ -498,7 +493,6 @@ test "parse pipeline with indentation" {
     // The assignment value should be a pipeline
     const assignment = program.expressions[0].assignment;
     try testing.expect(assignment.value.* == .binary); // Pipeline is binary expr
-    //std.debug.print("value {any}\n",.{assignment.value.*});
 }
 
 test "assignment with pipeline continuation" {
@@ -512,17 +506,10 @@ test "assignment with pipeline continuation" {
     ;
 
     const tokens = try Lexer.tokenize(source, arena.allocator());
-    
-    // DEBUG: Print the tokens
-    std.debug.print("\nTokens generated:\n", .{});
-    for (tokens) |token| {
-        std.debug.print("  {any}\n", .{token.type});
-    }
-    
+
     const program = try parse(tokens, arena.allocator());
     try testing.expectEqual(@as(usize, 1), program.expressions.len);
 }
-
 
 test "assignment value on indented line" {
     const allocator = testing.allocator;
@@ -533,12 +520,9 @@ test "assignment value on indented line" {
         \\x :=
         \\  5 + 10
     ;
-    
+
     const tokens = try Lexer.tokenize(source, arena.allocator());
-    
-    std.debug.print("\nTokens:\n", .{});
-    for (tokens) |t| std.debug.print("  {any}\n", .{t.type});
-    
+
     const program = try parse(tokens, arena.allocator());
     try testing.expectEqual(@as(usize, 1), program.expressions.len);
 }
@@ -553,12 +537,7 @@ test "indented orphan expression errors" {
         \\  6
     ;
     
-    const tokens = try Lexer.tokenize(source, arena.allocator());
-    
-    std.debug.print("\nTokens:\n", .{});
-    for (tokens) |t| std.debug.print("  {any}\n", .{t.type});
-    
-    // This should error!
-    const result = parse(tokens, arena.allocator());
+    // The lexer should catch this error, not the parser!
+    const result = Lexer.tokenize(source, arena.allocator());
     try testing.expectError(error.UnexpectedIndentation, result);
 }
