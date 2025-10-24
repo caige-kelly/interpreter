@@ -52,7 +52,6 @@ pub fn parse(tokens: []const Token, allocator: std.mem.Allocator) !Ast.Program {
         const expr = try parseAssignment(&state, allocator);
         std.debug.print("expr {any}\n", .{expr});
         try exprs.append(allocator, expr);
-        
     }
 
     return Ast.Program{
@@ -67,12 +66,9 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     var explicit_type: ?Type = null;
 
     if (state.match(.COLON_EQUAL)) {
-        // inferred
+        // inferred type
     } else if (state.match(.COLON)) {
-        if (state.peek().type != .IDENTIFIER) {
-            return error.UnexpectedToken;
-        }
-
+        // explicit type
         const type_name = state.consume();
         explicit_type = try parseTypeName(type_name.lexeme);
 
@@ -80,53 +76,46 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
             return error.UnexpectedToken;
         }
     } else {
+        // Not an assignment, just return the expression
         return expr;
     }
 
-    while (!state.isAtEnd()) {
-
-        std.debug.print("next token {any}\n", .{state.peek()});
-
-        if (state.match(.INDENT) or state.match(.NEWLINE)) {
-            continue;
+    // Now parse the value
+    const value = if (state.match(.BLOCK_START)) blk: {
+        const val = try parsePipeline(state, allocator);
+        if (!state.match(.BLOCK_END)) {
+            return error.ExpectedBlockEnd;
         }
+        break :blk val;
+    } else blk: {
+        break :blk try parsePipeline(state, allocator);
+    };
 
-        const value = try parsePipeline(state, allocator);
-
-        if (state.match(.INDENT) or state.match(.NEWLINE)) {
-            continue;
-        }
-
-        if (!state.match(.DEDENT)) {
-            return error.InvalidExpression;
-        } 
-
-        switch (expr) {
-            .identifier => |name| {
-                const value_ptr = try allocator.create(Ast.Expr);
-                value_ptr.* = value;
-                return Ast.Expr{
-                    .assignment = .{
-                        .name = name,
-                        .type = explicit_type,
-                        .value = value_ptr,
-                    },
-                };
-            },
-            else => return error.InvalidAssignmentTarget,
-        }
+    // Create the assignment
+    switch (expr) {
+        .identifier => |name| {
+            const value_ptr = try allocator.create(Ast.Expr);
+            value_ptr.* = value;
+            return Ast.Expr{
+                .assignment = .{
+                    .name = name,
+                    .type = explicit_type,
+                    .value = value_ptr,
+                },
+            };
+        },
+        else => return error.InvalidAssignmentTarget,
     }
-
-    return expr;
 }
 
 fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+    std.debug.print("parsePipeline start, current token: {any}\n", .{state.peek().type});
+
     var left = try parsEquality(state, allocator);
 
     while (state.match(.PIPE)) {
+        std.debug.print("Found |>, current token after: {any}\n", .{state.peek().type});
 
-        std.debug.print("made it here\n", .{});
-        
         skipNewlines(state);
         const right = try parsEquality(state, allocator);
 
@@ -143,6 +132,7 @@ fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
             },
         };
     }
+    std.debug.print("parsePipeline end, current token: {any}\n", .{state.peek().type});
 
     return left;
 }
@@ -323,7 +313,10 @@ fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         .BOOLEAN => Ast.Expr{ .literal = token.literal.? },
         .NONE => Ast.Expr{ .literal = token.literal.? },
         .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
-        else => |t| {std.debug.print("token {any}\n", .{t}); return error.UnexpectedToken;},
+        else => |t| {
+            std.debug.print("token {any}\n", .{t});
+            return error.UnexpectedToken;
+        },
     };
 }
 
@@ -334,7 +327,6 @@ fn parseTypeName(name: []const u8) !Type {
     if (std.mem.eql(u8, name, "none")) return .none;
     return error.UnknownType;
 }
-
 
 fn skipNewlines(state: *ParseState) void {
     while (state.peek().type == .NEWLINE) {
@@ -513,16 +505,60 @@ test "assignment with pipeline continuation" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    
+
     const source =
         \\x := "hello"
         \\  |> uppercase
     ;
-    
-    // Tokenize first!
+
     const tokens = try Lexer.tokenize(source, arena.allocator());
     
-    // Then parse
+    // DEBUG: Print the tokens
+    std.debug.print("\nTokens generated:\n", .{});
+    for (tokens) |token| {
+        std.debug.print("  {any}\n", .{token.type});
+    }
+    
     const program = try parse(tokens, arena.allocator());
     try testing.expectEqual(@as(usize, 1), program.expressions.len);
+}
+
+
+test "assignment value on indented line" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x :=
+        \\  5 + 10
+    ;
+    
+    const tokens = try Lexer.tokenize(source, arena.allocator());
+    
+    std.debug.print("\nTokens:\n", .{});
+    for (tokens) |t| std.debug.print("  {any}\n", .{t.type});
+    
+    const program = try parse(tokens, arena.allocator());
+    try testing.expectEqual(@as(usize, 1), program.expressions.len);
+}
+
+test "indented orphan expression errors" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const source =
+        \\x := 5
+        \\  6
+    ;
+    
+    const tokens = try Lexer.tokenize(source, arena.allocator());
+    
+    std.debug.print("\nTokens:\n", .{});
+    for (tokens) |t| std.debug.print("  {any}\n", .{t.type});
+    
+    // This should error!
+    const result = parse(tokens, arena.allocator());
+    try testing.expectError(error.UnexpectedIndentation, result);
 }

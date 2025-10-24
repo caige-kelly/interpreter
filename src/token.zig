@@ -45,6 +45,7 @@ pub const TokenType = enum {
     CARET,
     BANG,
     QUESTION,
+    SEMICOLON,
 
     // Delimiters
     LEFT_PAREN,
@@ -53,6 +54,9 @@ pub const TokenType = enum {
     RIGHT_BRACKET,
     LEFT_BRACE,
     RIGHT_BRACE,
+    BLOCK_START,
+    BLOCK_END,
+
 
     // Special markers
     AT,

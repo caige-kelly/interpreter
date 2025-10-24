@@ -85,7 +85,108 @@ pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
     state.start_column = state.column;
     try makeToken(&state, &tokens, allocator, .EOF, .none);
 
-    return tokens.toOwnedSlice(allocator);
+    const raw_tokens = try tokens.toOwnedSlice(allocator);
+    return convertToBlocks(raw_tokens, allocator);
+}
+
+fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
+    var result = try std.ArrayList(Token).initCapacity(allocator, 0);
+    var block_depth: usize = 0;
+
+    var i: usize = 0;
+    while (i < tokens.len) {
+        const token = tokens[i];
+
+        switch (token.type) {
+            .NEWLINE => {
+                const prev_type = if (result.items.len > 0)
+                    result.items[result.items.len - 1].type
+                else
+                    TokenType.EOF;
+
+                const has_indent = i + 1 < tokens.len and tokens[i + 1].type == .INDENT;
+
+                if (has_indent) {
+                    // Check what comes AFTER the indent
+                    const after_indent = if (i + 2 < tokens.len) tokens[i + 2].type else TokenType.EOF;
+
+                    // Assignment continuation: := followed by newline+indent
+                    // Allow any expression to start on the next line
+                    if (prev_type == .COLON_EQUAL) {
+                        // Skip the newline and indent, the value expression follows
+                        i += 2;
+                        continue;
+                    }
+                    // BLOCK_START: -> followed by indent (for arrow functions/blocks)
+                    else if (prev_type == .ARROW) {
+                        try result.append(allocator, .{
+                            .type = .BLOCK_START,
+                            .lexeme = "",
+                            .line = token.line,
+                            .column = token.column,
+                            .literal = null,
+                        });
+                        block_depth += 1;
+                        i += 2;
+                        continue;
+                    }
+                    // Valid continuation: operator after indent (|>, +, -, etc.)
+                    else if (after_indent == .PIPE or after_indent == .PLUS or
+                        after_indent == .MINUS or after_indent == .STAR or
+                        after_indent == .SLASH or after_indent == .DOT)
+                    {
+                        i += 2; // Skip NEWLINE and INDENT - continuation is OK
+                        continue;
+                    }
+                    // ERROR: Indent with no valid continuation
+                    else {
+                        return error.UnexpectedIndent;
+                    }
+                } else {
+                    // Keep newline for statement separation
+                    try result.append(allocator, token);
+                    i += 1;
+                }
+            },
+            .DEDENT => {
+                // Only emit BLOCK_END if we're in a block
+                if (block_depth > 0) {
+                    try result.append(allocator, .{
+                        .type = .BLOCK_END,
+                        .lexeme = "",
+                        .line = token.line,
+                        .column = token.column,
+                        .literal = null,
+                    });
+                    block_depth -= 1;
+                }
+                i += 1;
+            },
+            .INDENT => {
+                // Standalone INDENT tokens should have been handled above
+                // This shouldn't happen but skip it if it does
+                i += 1;
+            },
+            else => {
+                try result.append(allocator, token);
+                i += 1;
+            },
+        }
+    }
+
+    // Close any remaining blocks
+    while (block_depth > 0) {
+        try result.append(allocator, .{
+            .type = .BLOCK_END,
+            .lexeme = "",
+            .line = if (result.items.len > 0) result.items[result.items.len - 1].line else 1,
+            .column = if (result.items.len > 0) result.items[result.items.len - 1].column else 1,
+            .literal = null,
+        });
+        block_depth -= 1;
+    }
+
+    return result.toOwnedSlice(allocator);
 }
 
 fn handleIndentation(
