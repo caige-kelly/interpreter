@@ -358,3 +358,7 @@ test "Memory: no leaks with complex Value" {
     // Single deinit should clean everything
     outer.deinit();
 }
+
+test "fake failure" {
+    try std.testing.expect(false);
+}
