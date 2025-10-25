@@ -7,7 +7,10 @@ pub const EvalError = error{
     InternalFault,
 };
 
-// Add this near the top with your other type definitions
+// ============================================================================
+// Environment
+// ============================================================================
+
 pub const Environment = struct {
     bindings: std.StringHashMap(Value),
     allocator: std.mem.Allocator,
@@ -20,38 +23,29 @@ pub const Environment = struct {
     }
 
     pub fn deinit(self: *Environment) void {
-        // Free all stored values
         var iter = self.bindings.iterator();
         while (iter.next()) |entry| {
-            // Free the key (variable name was duplicated)
             self.allocator.free(entry.key_ptr.*);
-            // Free the value if it contains allocated memory
             freeValue(self.allocator, entry.value_ptr.*);
         }
         self.bindings.deinit();
     }
 
     pub fn set(self: *Environment, name: []const u8, value: Value) !void {
-        // Deep copy the value so it persists after arena cleanup
         const value_copy = try self.copyValue(value);
 
-        // Check if variable already exists
-        if (self.bindings.get(name)) |old_value| {
-            // Free the old value
-            freeValue(self.allocator, old_value);
-            // Remove old key
-            var iter = self.bindings.iterator();
-            while (iter.next()) |entry| {
-                if (std.mem.eql(u8, entry.key_ptr.*, name)) {
-                    self.allocator.free(entry.key_ptr.*);
-                    break;
-                }
-            }
+        // If key exists, get and free it
+        if (self.bindings.fetchRemove(name)) |old_entry| {
+            self.allocator.free(old_entry.key);
+            freeValue(self.allocator, old_entry.value);
         }
 
-        // Duplicate the name so it persists
         const name_copy = try self.allocator.dupe(u8, name);
         try self.bindings.put(name_copy, value_copy);
+    }
+
+    pub fn get(self: *Environment, name: []const u8) ?Value {
+        return self.bindings.get(name);
     }
 
     fn copyValue(self: *Environment, value: Value) !Value {
@@ -62,7 +56,6 @@ pub const Environment = struct {
             .string => |s| Value{ .string = try self.allocator.dupe(u8, s) },
             .result => |r| {
                 const result_copy = try self.allocator.create(Result);
-
                 const value_copy = if (r.value) |v| try self.copyValue(v) else null;
                 const err_copy = if (r.err_msg) |msg| try self.allocator.dupe(u8, msg) else null;
                 const expr_source_copy = try self.allocator.dupe(u8, r.meta.expr_source);
@@ -79,23 +72,13 @@ pub const Environment = struct {
         };
     }
 
-    pub fn get(self: *Environment, name: []const u8) ?Value {
-        return self.bindings.get(name);
-    }
-
     fn freeValue(allocator: std.mem.Allocator, value: Value) void {
         switch (value) {
             .string => |s| allocator.free(s),
             .result => |r| {
-                if (r.value) |*v| {
-                    freeValue(allocator, v.*);
-                }
-                if (r.err_msg) |msg| {
-                    allocator.free(msg);
-                }
-                if (r.meta.expr_source.len > 0) {
-                    allocator.free(r.meta.expr_source);
-                }
+                if (r.value) |*v| freeValue(allocator, v.*);
+                if (r.err_msg) |msg| allocator.free(msg);
+                if (r.meta.expr_source.len > 0) allocator.free(r.meta.expr_source);
                 r.meta.deinit();
                 allocator.destroy(r);
             },
@@ -108,7 +91,24 @@ pub const Environment = struct {
 // Core Types
 // ============================================================================
 
-/// Result = ok(Value) or err(message), always with metadata
+pub const Meta = struct {
+    expr_source: []const u8 = "",
+    duration_ns: u64 = 0,
+    extra: std.StringHashMap([]const u8),
+
+    pub fn init(expr_source: []const u8, allocator: std.mem.Allocator) Meta {
+        return .{
+            .expr_source = expr_source,
+            .duration_ns = 0,
+            .extra = std.StringHashMap([]const u8).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Meta) void {
+        self.extra.deinit();
+    }
+};
+
 pub const Result = struct {
     value: ?Value,
     err_msg: ?[]const u8,
@@ -129,80 +129,16 @@ pub const Result = struct {
     pub fn isErr(self: Result) bool {
         return self.err_msg != null;
     }
-
-    pub fn print(self: *const Result, writer: anytype) !void {
-        if (self.value) |val| {
-            try writer.writeAll("ok(");
-            try val.print(writer);
-            try writer.print(", {s})", .{@tagName(val)});
-        } else if (self.err_msg) |msg| {
-            try writer.print("err(\"{s}\")", .{msg});
-        }
-    }
 };
 
-/// Metadata attached to results
-pub const Meta = struct {
-    expr_source: []const u8,
-    duration_ns: u64,
-    extra: std.StringHashMap([]const u8),
-
-    pub fn init(expr_source: []const u8, allocator: std.mem.Allocator) Meta {
-        return .{
-            .expr_source = expr_source,
-            .duration_ns = 0,
-            .extra = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-
-    pub fn withDuration(self: Meta, ns: u64) Meta {
-        var m = self;
-        m.duration_ns = ns;
-        return m;
-    }
-
-    pub fn deinit(self: *Meta) void {
-        self.extra.deinit();
-    }
-};
-
-fn evalOk(state: *EvalState, ok_expr: Ast.OkExpr) EvalError!Value {
-    const inner_value = try evalExpr(state, ok_expr.value.*);
-
-    const result_ptr = try state.allocator.create(Result);
-    result_ptr.* = Result.ok(inner_value, Meta.init("ok", state.allocator));
-
-    return Value{ .result = result_ptr };
-}
-
-fn evalErr(state: *EvalState, err_expr: Ast.ErrExpr) EvalError!Value {
-    const msg_value = try evalExpr(state, err_expr.message.*);
-
-    // Expect string
-    const msg_str = switch (msg_value) {
-        .string => |s| s,
-        else => {
-            const result_ptr = try state.allocator.create(Result);
-            result_ptr.* = Result.err("err() requires string", Meta.init("err", state.allocator));
-            return Value{ .result = result_ptr };
-        },
-    };
-
-    const result_ptr = try state.allocator.create(Result);
-    result_ptr.* = Result.err(msg_str, Meta.init("err", state.allocator));
-
-    return Value{ .result = result_ptr };
-}
-
-/// Value = the data types in Ripple (including Result as a first-class type)
 pub const Value = union(enum) {
     number: f64,
     string: []const u8,
     boolean: bool,
     none: void,
-    result: *Result, // Result is a value!
+    result: *Result,
 
-    pub fn print(self: Value, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    pub fn print(self: Value, writer: anytype) !void {
         switch (self) {
             .number => |n| try writer.print("{d}", .{n}),
             .string => |s| try writer.print("\"{s}\"", .{s}),
@@ -210,19 +146,17 @@ pub const Value = union(enum) {
             .none => try writer.print("none", .{}),
             .result => |r| {
                 if (r.isOk()) {
+                    try writer.writeAll("ok(");
                     if (r.value) |val| {
-                        try writer.print("Ok(", .{});
-                        try val.print(writer); // This is safe - only IO errors can happen
-                        try writer.print(")", .{});
+                        try val.print(writer);
                     } else {
-                        try writer.print("ok(none)", .{});
+                        try writer.writeAll("none");
                     }
+                    try writer.writeAll(")");
+                } else if (r.err_msg) |msg| {
+                    try writer.print("err(\"{s}\")", .{msg});
                 } else {
-                    if (r.err_msg) |msg| {
-                        try writer.print("err(\"{s}\")", .{msg});
-                    } else {
-                        try writer.print("err(unknown)", .{});
-                    }
+                    try writer.writeAll("err(unknown)");
                 }
             },
         }
@@ -236,11 +170,6 @@ pub const TraceEntry = struct {
     duration_ns: u64,
 };
 
-pub const EvaluationResult = struct {
-    value: Value,
-    trace: []TraceEntry,
-};
-
 // ============================================================================
 // Evaluator
 // ============================================================================
@@ -250,7 +179,7 @@ pub const EvalConfig = struct {
 };
 
 const EvalState = struct {
-    globals: *Environment, // Changed from StringHashMap(Value) to *Environment
+    globals: *Environment,
     allocator: std.mem.Allocator,
 };
 
@@ -260,7 +189,7 @@ pub fn evaluate(
     config: EvalConfig,
     env: ?*Environment,
 ) EvalError!Value {
-    _ = config;
+    _ = config; // Mark as intentionally unused for now
 
     var temp_env = if (env == null) try Environment.init(allocator) else null;
     defer if (temp_env) |*e| e.deinit();
@@ -268,138 +197,141 @@ pub fn evaluate(
     const active_env = env orelse &temp_env.?;
 
     var state = EvalState{
-        .globals = active_env, // Use the environment instead of a new hashmap
+        .globals = active_env,
         .allocator = allocator,
     };
 
     var last_value = Value{ .none = {} };
-
     for (program.expressions) |expr| {
-        const start = std.time.nanoTimestamp();
         last_value = try evalExpr(&state, expr);
-        _ = start;
     }
 
     return last_value;
 }
 
-// ============================================================================
-// Expression Evaluation
-// ============================================================================
-
 fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
     return switch (expr) {
-        .literal => |lit| try evalLiteral(state, lit),
-        .assignment => |asgn| try evalAssignment(state, asgn),
-        .binary => |bin| try evalBinary(state, bin),
-        .identifier => |id| try evalIdentifier(state, id),
-        .ok_expr => |ok_e| try evalOk(state, ok_e), // ← Is this here?
-        .err_expr => |err_e| try evalErr(state, err_e),
+        .literal => |lit| evalLiteral(lit),
+        .identifier => |id| evalIdentifier(state, id),
+        .assignment => |asgn| evalAssignment(state, asgn),
+        .binary => |bin| evalBinary(state, bin),
+        .ok_expr => |ok_e| evalOk(state, ok_e),
+        .err_expr => |err_e| evalErr(state, err_e),
         else => Value{ .none = {} },
     };
 }
 
-// "5" evaluates to Value{ .result = ok(5, meta) }
-fn evalLiteral(state: *EvalState, lit: Ast.Literal) EvalError!Value {
-    _ = state;
+fn evalLiteral(lit: Ast.Literal) Value {
     return switch (lit) {
-        .string => |s| Value{ .string = s },
         .number => |n| Value{ .number = n },
+        .string => |s| Value{ .string = s },
         .boolean => |b| Value{ .boolean = b },
         .none => Value{ .none = {} },
     };
-
-    // const result_ptr = try state.allocator.create(Result);
-    // result_ptr.* = Result.ok(inner_value, Meta.init("literal", state.allocator));
-
-    //return Value{ .result = result_ptr };
 }
 
 fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
-    if (state.globals.get(name)) |val| { // Now calls Environment.get()
-        return val;
-    }
+    if (state.globals.get(name)) |val| return val;
 
-    // Return an error Result
-    const result_ptr = try state.allocator.create(Result);
-    result_ptr.* = Result.err("undefined variable", Meta.init("identifier", state.allocator));
-    return Value{ .result = result_ptr };
+    return try createErrorResult(state, "undefined variable");
 }
 
 fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
     if (state.globals.bindings.contains(assign.name)) {
-        const result_ptr = try state.allocator.create(Result);
-        result_ptr.* = Result.err("variable already defined", Meta.init("assignment", state.allocator));
-        return Value{ .result = result_ptr };
+        return try createErrorResult(state, "variable already defined");
     }
 
-    // Evaluate RHS
     const rhs_value = try evalExpr(state, assign.value.*);
-
-    // Store the value AS-IS (don't unwrap!)
     try state.globals.set(assign.name, rhs_value);
-
-    // Return the assigned value
     return rhs_value;
 }
-
-// In evaluator.zig, update evalBinary:
 
 fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
     const left_value = try evalExpr(state, bin.left.*);
     const right_value = try evalExpr(state, bin.right.*);
 
-    // Auto-unwrap Results (this part stays)
-    const left = switch (left_value) {
-        .result => |r| blk: {
-            if (r.isErr()) return left_value; // Propagate error
-            const val = r.value.?;
-            // Clean up wrapper
-            var meta = r.meta;
-            meta.deinit();
-            state.allocator.destroy(r);
-            break :blk val;
-        },
-        else => left_value,
-    };
-
-    const right = switch (right_value) {
-        .result => |r| blk: {
-            if (r.isErr()) return right_value;
-            const val = r.value.?;
-            var meta = r.meta;
-            meta.deinit();
-            state.allocator.destroy(r);
-            break :blk val;
-        },
-        else => right_value,
-    };
+    const left = try unwrapValue(state, left_value);
+    const right = try unwrapValue(state, right_value);
 
     // Type check
     if (left != .number or right != .number) {
-        const result_ptr = try state.allocator.create(Result);
-        result_ptr.* = Result.err("type mismatch", Meta.init("binary", state.allocator));
-        return Value{ .result = result_ptr };
+        return try createErrorResult(state, "type mismatch: expected numbers");
     }
 
-    // Division by zero - ONLY fallible operation that needs Result
+    // Division by zero check
     if (bin.operator == .SLASH and right.number == 0) {
-        const result_ptr = try state.allocator.create(Result);
-        result_ptr.* = Result.err("division by zero", Meta.init("binary", state.allocator));
-        return Value{ .result = result_ptr };
+        return try createErrorResult(state, "division by zero");
     }
 
-    // Compute - all other ops are infallible, return BARE value
-    const result_number = switch (bin.operator) {
+    // Compute result
+    const result = switch (bin.operator) {
         .PLUS => left.number + right.number,
         .MINUS => left.number - right.number,
         .STAR => left.number * right.number,
-        .SLASH => left.number / right.number, // Safe because we checked above
-        else => 0.0,
+        .SLASH => left.number / right.number,
+        else => return try createErrorResult(state, "unknown operator"),
     };
 
-    // Return bare value, NO Result wrapper
-    return Value{ .number = result_number };
+    return Value{ .number = result };
+}
+
+fn evalOk(state: *EvalState, ok_expr: Ast.OkExpr) EvalError!Value {
+    const inner_value = try evalExpr(state, ok_expr.value.*);
+    const result_ptr = try state.allocator.create(Result);
+    result_ptr.* = Result.ok(inner_value, Meta.init("ok", state.allocator));
+    return Value{ .result = result_ptr };
+}
+
+fn evalErr(state: *EvalState, err_expr: Ast.ErrExpr) EvalError!Value {
+    const msg_value = try evalExpr(state, err_expr.message.*);
+
+    const msg_str = switch (msg_value) {
+        .string => |s| s,
+        .result => |r| blk: {
+            if (r.value) |v| {
+                if (v == .string) {
+                    // Copy the string before freeing the Result
+                    const str_copy = try state.allocator.dupe(u8, v.string);
+                    r.meta.deinit();
+                    state.allocator.destroy(r);
+                    break :blk str_copy;
+                }
+            }
+            return try createErrorResult(state, "err() requires string argument");
+        },
+        else => return try createErrorResult(state, "err() requires string argument"),
+    };
+
+    const result_ptr = try state.allocator.create(Result);
+    result_ptr.* = Result.err(msg_str, Meta.init("err", state.allocator));
+    return Value{ .result = result_ptr };
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+fn unwrapValue(state: *EvalState, value: Value) EvalError!Value {
+    return switch (value) {
+        .result => |r| blk: {
+            if (r.isErr()) {
+                // Don't free on error - return the Result as-is
+                return value;
+            }
+            // Only free if we're unwrapping successfully
+            const val = r.value.?;
+            r.meta.deinit();
+            state.allocator.destroy(r);
+            break :blk val;
+        },
+        else => value,
+    };
+}
+
+fn createErrorResult(state: *EvalState, msg: []const u8) EvalError!Value {
+    const result_ptr = try state.allocator.create(Result);
+    result_ptr.* = Result.err(msg, Meta.init("error", state.allocator));
+    return Value{ .result = result_ptr };
 }
 
 // ============================================================================
@@ -408,7 +340,7 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
 
 const testing = std.testing;
 
-test "5 evaluates to Value{ .result = ok(5) }" {
+test "literal evaluates to bare value" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -417,15 +349,13 @@ test "5 evaluates to Value{ .result = ok(5) }" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const value = try evaluate(program, arena.allocator(), .{}, null); // Add null
+    const value = try evaluate(program, arena.allocator(), null);
 
-    //try testing.expect(value == .value);
-    //try testing.expect(value.result.isOk());
     try testing.expect(value == .number);
     try testing.expectEqual(@as(f64, 5.0), value.number);
 }
 
-test "x := 5 evaluates to Value{ .number = 5 }" {
+test "assignment returns assigned value" {
     const allocator = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -434,8 +364,40 @@ test "x := 5 evaluates to Value{ .number = 5 }" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const value = try evaluate(program, arena.allocator(), .{}, null);
+    const value = try evaluate(program, arena.allocator(), null);
 
-    try testing.expect(value == .number); // ✅ Correct! Literal is bare
+    try testing.expect(value == .number);
     try testing.expectEqual(@as(f64, 5.0), value.number);
+}
+
+test "ok() creates Result" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("ok(5)", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const value = try evaluate(program, arena.allocator(), null);
+
+    try testing.expect(value == .result);
+    try testing.expect(value.result.isOk());
+    try testing.expectEqual(@as(f64, 5.0), value.result.value.?.number);
+}
+
+test "err() creates error Result" {
+    const allocator = testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+
+    const tokens = try @import("lexer.zig").tokenize("err(\"failed\")", arena.allocator());
+    var program = try @import("parser.zig").parse(tokens, arena.allocator());
+    defer program.deinit();
+
+    const value = try evaluate(program, arena.allocator(), null);
+
+    try testing.expect(value == .result);
+    try testing.expect(value.result.isErr());
+    try testing.expectEqualStrings("failed", value.result.err_msg.?);
 }
