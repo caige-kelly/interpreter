@@ -72,9 +72,9 @@ pub fn run(allocator: Allocator, args: *std.process.ArgIterator) !void {
 fn executeScript(allocator: Allocator, path: []const u8, options: ExecOptions) !void {
     // Read the script file
     const source = std.fs.cwd().readFileAlloc(
-        path,
         allocator,
-        std.Io.Limit.limited(10 * 1024 * 1024), // Max 10MB file
+        path,
+        10 * 1024 * 1024, // Max 10MB file
     ) catch |err| {
         std.debug.print("Error reading file '{s}': {any}\n", .{ path, err });
         std.process.exit(1);

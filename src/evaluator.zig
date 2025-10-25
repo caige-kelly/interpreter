@@ -166,6 +166,34 @@ pub const Meta = struct {
     }
 };
 
+fn evalOk(state: *EvalState, ok_expr: Ast.OkExpr) EvalError!Value {
+    const inner_value = try evalExpr(state, ok_expr.value.*);
+
+    const result_ptr = try state.allocator.create(Result);
+    result_ptr.* = Result.ok(inner_value, Meta.init("ok", state.allocator));
+
+    return Value{ .result = result_ptr };
+}
+
+fn evalErr(state: *EvalState, err_expr: Ast.ErrExpr) EvalError!Value {
+    const msg_value = try evalExpr(state, err_expr.message.*);
+
+    // Expect string
+    const msg_str = switch (msg_value) {
+        .string => |s| s,
+        else => {
+            const result_ptr = try state.allocator.create(Result);
+            result_ptr.* = Result.err("err() requires string", Meta.init("err", state.allocator));
+            return Value{ .result = result_ptr };
+        },
+    };
+
+    const result_ptr = try state.allocator.create(Result);
+    result_ptr.* = Result.err(msg_str, Meta.init("err", state.allocator));
+
+    return Value{ .result = result_ptr };
+}
+
 /// Value = the data types in Ripple (including Result as a first-class type)
 pub const Value = union(enum) {
     number: f64,
@@ -187,13 +215,13 @@ pub const Value = union(enum) {
                         try val.print(writer); // This is safe - only IO errors can happen
                         try writer.print(")", .{});
                     } else {
-                        try writer.print("Ok(none)", .{});
+                        try writer.print("ok(none)", .{});
                     }
                 } else {
                     if (r.err_msg) |msg| {
-                        try writer.print("Err(\"{s}\")", .{msg});
+                        try writer.print("err(\"{s}\")", .{msg});
                     } else {
-                        try writer.print("Err(unknown)", .{});
+                        try writer.print("err(unknown)", .{});
                     }
                 }
             },
@@ -265,23 +293,26 @@ fn evalExpr(state: *EvalState, expr: Ast.Expr) EvalError!Value {
         .assignment => |asgn| try evalAssignment(state, asgn),
         .binary => |bin| try evalBinary(state, bin),
         .identifier => |id| try evalIdentifier(state, id),
+        .ok_expr => |ok_e| try evalOk(state, ok_e), // ← Is this here?
+        .err_expr => |err_e| try evalErr(state, err_e),
         else => Value{ .none = {} },
     };
 }
 
 // "5" evaluates to Value{ .result = ok(5, meta) }
 fn evalLiteral(state: *EvalState, lit: Ast.Literal) EvalError!Value {
-    const inner_value = switch (lit) {
+    _ = state;
+    return switch (lit) {
         .string => |s| Value{ .string = s },
         .number => |n| Value{ .number = n },
         .boolean => |b| Value{ .boolean = b },
         .none => Value{ .none = {} },
     };
 
-    const result_ptr = try state.allocator.create(Result);
-    result_ptr.* = Result.ok(inner_value, Meta.init("literal", state.allocator));
+    // const result_ptr = try state.allocator.create(Result);
+    // result_ptr.* = Result.ok(inner_value, Meta.init("literal", state.allocator));
 
-    return Value{ .result = result_ptr };
+    //return Value{ .result = result_ptr };
 }
 
 fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
@@ -296,7 +327,7 @@ fn evalIdentifier(state: *EvalState, name: []const u8) EvalError!Value {
 }
 
 fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
-    if (state.globals.bindings.contains(assign.name)) { // Check if exists
+    if (state.globals.bindings.contains(assign.name)) {
         const result_ptr = try state.allocator.create(Result);
         result_ptr.* = Result.err("variable already defined", Meta.init("assignment", state.allocator));
         return Value{ .result = result_ptr };
@@ -305,24 +336,11 @@ fn evalAssignment(state: *EvalState, assign: Ast.AssignExpr) EvalError!Value {
     // Evaluate RHS
     const rhs_value = try evalExpr(state, assign.value.*);
 
-    // Unwrap if it's a Result
-    const unwrapped_value = switch (rhs_value) {
-        .result => |r| blk: {
-            if (r.isErr()) {
-                // Propagate error
-                return rhs_value;
-            }
-            // Unwrap the ok value
-            break :blk r.value.?;
-        },
-        else => rhs_value, // Already unwrapped
-    };
+    // Store the value AS-IS (don't unwrap!)
+    try state.globals.set(assign.name, rhs_value);
 
-    // Store unwrapped value using Environment.set()
-    try state.globals.set(assign.name, unwrapped_value);
-
-    // Return unwrapped value
-    return unwrapped_value;
+    // Return the assigned value
+    return rhs_value;
 }
 
 // In evaluator.zig, update evalBinary:
@@ -331,12 +349,12 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
     const left_value = try evalExpr(state, bin.left.*);
     const right_value = try evalExpr(state, bin.right.*);
 
-    // Auto-unwrap if they're Results and clean up the wrapper
+    // Auto-unwrap Results (this part stays)
     const left = switch (left_value) {
         .result => |r| blk: {
-            if (r.isErr()) return left_value;
+            if (r.isErr()) return left_value; // Propagate error
             const val = r.value.?;
-            // Clean up the Result wrapper's meta
+            // Clean up wrapper
             var meta = r.meta;
             meta.deinit();
             state.allocator.destroy(r);
@@ -349,7 +367,6 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
         .result => |r| blk: {
             if (r.isErr()) return right_value;
             const val = r.value.?;
-            // Clean up the Result wrapper's meta
             var meta = r.meta;
             meta.deinit();
             state.allocator.destroy(r);
@@ -361,31 +378,28 @@ fn evalBinary(state: *EvalState, bin: Ast.BinaryExpr) EvalError!Value {
     // Type check
     if (left != .number or right != .number) {
         const result_ptr = try state.allocator.create(Result);
-        result_ptr.* = Result.err("type mismatch: expected numbers", Meta.init("binary", state.allocator));
+        result_ptr.* = Result.err("type mismatch", Meta.init("binary", state.allocator));
         return Value{ .result = result_ptr };
     }
 
-    // Division by zero check
+    // Division by zero - ONLY fallible operation that needs Result
     if (bin.operator == .SLASH and right.number == 0) {
         const result_ptr = try state.allocator.create(Result);
         result_ptr.* = Result.err("division by zero", Meta.init("binary", state.allocator));
         return Value{ .result = result_ptr };
     }
 
-    // Compute result
+    // Compute - all other ops are infallible, return BARE value
     const result_number = switch (bin.operator) {
         .PLUS => left.number + right.number,
         .MINUS => left.number - right.number,
         .STAR => left.number * right.number,
-        .SLASH => left.number / right.number,
+        .SLASH => left.number / right.number, // Safe because we checked above
         else => 0.0,
     };
 
-    // Wrap in Result
-    const result_ptr = try state.allocator.create(Result);
-    result_ptr.* = Result.ok(Value{ .number = result_number }, Meta.init("binary", state.allocator));
-
-    return Value{ .result = result_ptr };
+    // Return bare value, NO Result wrapper
+    return Value{ .number = result_number };
 }
 
 // ============================================================================
@@ -405,10 +419,10 @@ test "5 evaluates to Value{ .result = ok(5) }" {
 
     const value = try evaluate(program, arena.allocator(), .{}, null); // Add null
 
-    try testing.expect(value == .result);
-    try testing.expect(value.result.isOk());
-    try testing.expect(value.result.value.? == .number);
-    try testing.expectEqual(@as(f64, 5.0), value.result.value.?.number);
+    //try testing.expect(value == .value);
+    //try testing.expect(value.result.isOk());
+    try testing.expect(value == .number);
+    try testing.expectEqual(@as(f64, 5.0), value.number);
 }
 
 test "x := 5 evaluates to Value{ .number = 5 }" {
@@ -420,8 +434,8 @@ test "x := 5 evaluates to Value{ .number = 5 }" {
     var program = try @import("parser.zig").parse(tokens, arena.allocator());
     defer program.deinit();
 
-    const value = try evaluate(program, arena.allocator(), .{}, null); // Add null
+    const value = try evaluate(program, arena.allocator(), .{}, null);
 
-    try testing.expect(value == .number);
+    try testing.expect(value == .number); // ✅ Correct! Literal is bare
     try testing.expectEqual(@as(f64, 5.0), value.number);
 }

@@ -11,6 +11,7 @@ pub const ParseError = error{
     InvalidAssignmentTarget,
     ExpectedToken,
     OutOfMemory,
+    UnknownType,
 };
 
 // Pure data
@@ -107,9 +108,7 @@ fn parseAssignment(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     }
 }
 
-fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    std.debug.print("parsePipeline start, current token: {any}\n", .{state.peek().type});
-
+fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     var left = try parsEquality(state, allocator);
 
     while (state.match(.PIPE)) {
@@ -138,7 +137,7 @@ fn parsePipeline(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return left;
 }
 
-fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     var left = try parseComparison(state, allocator);
 
     while (state.peek().type == .EQUAL_EQUAL or state.peek().type == .BANG_EQUAL) {
@@ -165,7 +164,7 @@ fn parsEquality(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return left;
 }
 
-fn parseComparison(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parseComparison(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     var left = try parseBinary(state, allocator);
 
     while (state.peek().type == .LESS or
@@ -196,7 +195,7 @@ fn parseComparison(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return left;
 }
 
-fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     var left = try parseMultiplicative(state, allocator);
 
     while (state.peek().type == .PLUS or state.peek().type == .MINUS) {
@@ -223,7 +222,7 @@ fn parseBinary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return left;
 }
 
-fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     var left = try parsePolicy(state, allocator);
 
     while (state.peek().type == .STAR or state.peek().type == .SLASH) {
@@ -250,7 +249,7 @@ fn parseMultiplicative(state: *ParseState, allocator: std.mem.Allocator) !Ast.Ex
     return left;
 }
 
-fn parsePolicy(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parsePolicy(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     // handle prefix policies
     if (state.peek().type == .CARET or
         state.peek().type == .QUESTION or
@@ -282,7 +281,7 @@ fn parsePolicy(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return parseUnary(state, allocator);
 }
 
-fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
+fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     // Only true unaries should stay here. Keep MINUS; if you want logical-not,
     // consider a `not` keyword to avoid ambiguity with bang policy.
     if (state.peek().type == .MINUS) {
@@ -304,8 +303,7 @@ fn parseUnary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     return parsePrimary(state, allocator);
 }
 
-fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
-    _ = allocator;
+fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) ParseError!Ast.Expr {
     const token = state.consume();
 
     return switch (token.type) {
@@ -314,6 +312,47 @@ fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
         .BOOLEAN => Ast.Expr{ .literal = token.literal.? },
         .NONE => Ast.Expr{ .literal = token.literal.? },
         .IDENTIFIER => Ast.Expr{ .identifier = token.lexeme },
+        .OK => {
+            // 'ok' already consumed above, we're now at '('
+
+            if (!state.match(.LEFT_PAREN)) {
+                return ParseError.ExpectedToken;
+            }
+
+            const value_expr = try parsePipeline(state, allocator);
+            const value_ptr = try allocator.create(Ast.Expr);
+            value_ptr.* = value_expr;
+
+            if (!state.match(.RIGHT_PAREN)) {
+                return ParseError.ExpectedToken;
+            }
+
+            return Ast.Expr{ .ok_expr = .{ .value = value_ptr } };
+        },
+        .ERR => {
+            if (!state.match(.LEFT_PAREN)) {
+                return ParseError.ExpectedToken;
+            }
+
+            const msg_expr = try parsePipeline(state, allocator);
+            const msg_ptr = try allocator.create(Ast.Expr);
+            msg_ptr.* = msg_expr;
+
+            if (!state.match(.RIGHT_PAREN)) {
+                return ParseError.ExpectedToken;
+            }
+
+            return Ast.Expr{ .err_expr = .{ .message = msg_ptr } };
+        },
+        .LEFT_PAREN => {
+            _ = state.consume();
+            const expr = try parsePipeline(state, allocator);
+            if (!state.match(.RIGHT_PAREN)) {
+                return ParseError.ExpectedToken;
+            }
+            return expr;
+        },
+
         else => |t| {
             std.debug.print("token {any}\n", .{t});
             return error.UnexpectedToken;
@@ -321,7 +360,7 @@ fn parsePrimary(state: *ParseState, allocator: std.mem.Allocator) !Ast.Expr {
     };
 }
 
-fn parseTypeName(name: []const u8) !Type {
+fn parseTypeName(name: []const u8) ParseError!Type {
     if (std.mem.eql(u8, name, "number")) return .number;
     if (std.mem.eql(u8, name, "string")) return .string;
     if (std.mem.eql(u8, name, "boolean")) return .boolean;
@@ -485,7 +524,7 @@ test "parse pipeline with indentation" {
     defer arena.deinit();
 
     const source =
-        \\x := 
+        \\x :=
         \\  5 +
         \\  5
     ;

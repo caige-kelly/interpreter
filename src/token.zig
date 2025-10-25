@@ -4,7 +4,7 @@ const Literal = @import("ast.zig").Literal;
 
 const KeywordKV = struct { []const u8, TokenType };
 
-pub const KeywordMap = std.StaticStringMap(TokenType).initComptime([_]KeywordKV{ .{ "tap", .TAP }, .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "none", .NONE }, .{ "then", .THEN }, .{ "true", .BOOLEAN }, .{ "false", .BOOLEAN } });
+pub const KeywordMap = std.StaticStringMap(TokenType).initComptime([_]KeywordKV{ .{ "tap", .TAP }, .{ "match", .MATCH }, .{ "try", .TRY }, .{ "or", .OR }, .{ "none", .NONE }, .{ "then", .THEN }, .{ "true", .BOOLEAN }, .{ "false", .BOOLEAN }, .{ "err", .ERR }, .{ "ok", .OK } });
 
 pub const Token = struct { type: TokenType, lexeme: []const u8, line: usize, column: usize, literal: ?Literal = null };
 
@@ -23,6 +23,8 @@ pub const TokenType = enum {
     THEN,
     TAP,
     ANY,
+    OK,
+    ERR,
 
     // Operators
     PLUS,
@@ -56,7 +58,6 @@ pub const TokenType = enum {
     RIGHT_BRACE,
     BLOCK_START,
     BLOCK_END,
-
 
     // Special markers
     AT,

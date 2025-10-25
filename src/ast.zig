@@ -18,7 +18,9 @@ pub const Expr = union(enum) {
     literal: Literal,
     identifier: []const u8,
     binary: BinaryExpr,
-    unary: UnaryExpr, // Add this line
+    unary: UnaryExpr,
+    ok_expr: OkExpr,
+    err_expr: ErrExpr,
     assignment: AssignExpr,
     policy: Policy,
     pipe: PipeExpr,
@@ -45,6 +47,14 @@ pub const Expr = union(enum) {
 };
 
 pub const Type = enum { number, string, boolean, none, unknown };
+
+pub const OkExpr = struct {
+    value: *Expr, // The value to wrap
+};
+
+pub const ErrExpr = struct {
+    message: *Expr, // The error message (should eval to string)
+};
 
 pub const PolicyValue = enum {
     none,
