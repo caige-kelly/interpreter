@@ -14,6 +14,35 @@ pub const Program = struct {
     }
 };
 
+// In ast.zig
+pub fn freeExpr(expr: *Expr, allocator: std.mem.Allocator) void {
+    switch (expr.*) {
+        .binary => |bin| {
+            freeExpr(bin.left, allocator);
+            freeExpr(bin.right, allocator);
+            allocator.destroy(bin.left);
+            allocator.destroy(bin.right);
+        },
+        .ok_expr => |ok_e| {
+            freeExpr(ok_e.value, allocator);
+            allocator.destroy(ok_e.value);
+        },
+        .err_expr => |err_e| {
+            freeExpr(err_e.message, allocator);
+            allocator.destroy(err_e.message);
+        },
+        .literal, .identifier => {},
+        // Add other expression types...
+    }
+}
+
+pub fn freeProgram(program: []Expr, allocator: std.mem.Allocator) void {
+    for (program) |*expr| {
+        freeExpr(expr, allocator);
+    }
+    allocator.free(program);
+}
+
 pub const Expr = union(enum) {
     literal: Literal,
     identifier: []const u8,
@@ -24,25 +53,111 @@ pub const Expr = union(enum) {
     assignment: AssignExpr,
     policy: Policy,
     pipe: PipeExpr,
+    // Add these if they exist in your code:
+    list: ListExpr,
+    map: MapExpr,
+    lambda: LambdaExpr,
+    call: CallExpr,
+    try_expr: TryExpr,
+    match_expr: MatchExpr,
+    or_expr: OrExpr,
+    then_expr: ThenExpr,
+    tap_expr: TapExpr,
 
     /// Recursively free all heap allocations in this expression tree
     pub fn deinit(self: Expr, allocator: std.mem.Allocator) void {
         switch (self) {
             .assignment => |a| {
+                a.value.deinit(allocator);
                 allocator.destroy(a.value);
             },
             .binary => |b| {
+                b.left.deinit(allocator);
+                b.right.deinit(allocator);
                 allocator.destroy(b.left);
                 allocator.destroy(b.right);
             },
+            .unary => |u| {
+                u.operand.deinit(allocator);
+                allocator.destroy(u.operand);
+            },
             .ok_expr => |ok| {
+                ok.value.deinit(allocator);
                 allocator.destroy(ok.value);
             },
             .err_expr => |err| {
+                err.message.deinit(allocator);
                 allocator.destroy(err.message);
             },
-            // Add other variants that contain pointers
-            else => {},
+            .policy => |p| {
+                p.expr.deinit(allocator);
+                allocator.destroy(p.expr);
+            },
+            .pipe => |p| {
+                p.left.deinit(allocator);
+                p.right.deinit(allocator);
+                allocator.destroy(p.left);
+                allocator.destroy(p.right);
+            },
+            .list => |l| {
+                for (l.elements) |*elem| {
+                    elem.deinit(allocator);
+                }
+                allocator.free(l.elements);
+            },
+            .map => |m| {
+                for (m.pairs) |*pair| {
+                    pair.value.deinit(allocator);
+                }
+                allocator.free(m.pairs);
+            },
+            .lambda => |lam| {
+                lam.body.deinit(allocator);
+                allocator.destroy(lam.body);
+                // Note: params are string slices owned by tokens, don't free
+            },
+            .call => |c| {
+                c.callee.deinit(allocator);
+                allocator.destroy(c.callee);
+                for (c.args) |*arg| {
+                    arg.deinit(allocator);
+                }
+                allocator.free(c.args);
+            },
+            .try_expr => |t| {
+                t.expr.deinit(allocator);
+                allocator.destroy(t.expr);
+            },
+            .match_expr => |m| {
+                m.value.deinit(allocator);
+                allocator.destroy(m.value);
+                for (m.branches) |*branch| {
+                    branch.expr.deinit(allocator);
+                    allocator.destroy(branch.expr);
+                }
+                allocator.free(m.branches);
+            },
+            .or_expr => |o| {
+                o.left.deinit(allocator);
+                o.right.deinit(allocator);
+                allocator.destroy(o.left);
+                allocator.destroy(o.right);
+            },
+            .then_expr => |t| {
+                t.left.deinit(allocator);
+                t.right.deinit(allocator);
+                allocator.destroy(t.left);
+                allocator.destroy(t.right);
+            },
+            .tap_expr => |t| {
+                t.left.deinit(allocator);
+                t.right.deinit(allocator);
+                allocator.destroy(t.left);
+                allocator.destroy(t.right);
+            },
+            // Leaf nodes - no heap allocations to free
+            .literal => {},
+            .identifier => {},
         }
     }
 };

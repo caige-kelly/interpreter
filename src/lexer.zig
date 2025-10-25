@@ -364,8 +364,8 @@ fn scanToken(
                 const literal = try scanNumber(state);
                 try makeToken(state, tokens, allocator, .NUMBER, literal);
             } else if (isAlpha(c)) {
-                const token_type = identifier(state);
-                try makeToken(state, tokens, allocator, token_type, .{ .none = {} });
+                const result = identifier(state);
+                try makeToken(state, tokens, allocator, result.token_type, result.literal);
             } else {
                 try undefinedLexeme(state);
             }
@@ -384,13 +384,25 @@ fn commentLexeme(state: *LexState) void {
     }
 }
 
-fn identifier(state: *LexState) TokenType {
+fn identifier(state: *LexState) struct { token_type: TokenType, literal: Literal } {
     while (isAlpha(state.peek()) or isNumber(state.peek())) {
         _ = state.advance();
     }
 
     const word = state.source[state.start..state.current];
-    return KeywordMap.get(word) orelse .IDENTIFIER;
+    const token_type = KeywordMap.get(word) orelse .IDENTIFIER;
+
+    // Special case: keywords with literal values
+    const literal = switch (token_type) {
+        .BOOLEAN => if (std.mem.eql(u8, word, "true"))
+            Literal{ .boolean = true }
+        else
+            Literal{ .boolean = false },
+        .NONE => Literal{ .none = {} },
+        else => Literal{ .none = {} }, // Default for identifiers
+    };
+
+    return .{ .token_type = token_type, .literal = literal };
 }
 
 fn isAlpha(token: u8) bool {
