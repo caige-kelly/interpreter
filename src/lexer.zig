@@ -5,7 +5,6 @@ const TokenType = @import("token.zig").TokenType;
 const Literal = @import("ast.zig").Literal;
 const KeywordMap = @import("token.zig").KeywordMap;
 
-// Pure data - parsing state
 const LexState = struct {
     source: []const u8,
     start: usize = 0,
@@ -45,32 +44,21 @@ const LexState = struct {
     }
 };
 
-// Main entry point - free function
 pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
+    var tokens = try std.ArrayList(Token).initCapacity(allocator, 64);
+    defer tokens.deinit(allocator);
+
     var state = LexState{ .source = source };
-    var tokens = try std.ArrayList(Token).initCapacity(allocator, 0);
-    var indent_stack = try std.ArrayList(usize).initCapacity(allocator, 0);
+
+    var indent_stack = try std.ArrayList(usize).initCapacity(allocator, 8);
     defer indent_stack.deinit(allocator);
 
-    try indent_stack.append(allocator, 0);
-
     while (!state.isAtEnd()) {
-        if (state.at_line_start and !state.isAtEnd()) {
-            try handleIndentation(&state, &tokens, &indent_stack, allocator);
-            state.at_line_start = false;
-        }
-
-        if (state.isAtEnd()) break;
-
-        state.start = state.current;
-        state.start_column = state.column;
-
-        try scanToken(&state, &tokens, allocator);
+        try scanToken(&state, &tokens, &indent_stack, allocator);
     }
 
-    // Add EOF token
-    // Before adding EOF token
-    while (indent_stack.items.len > 1) {
+    // Close any remaining indents at EOF
+    while (indent_stack.items.len > 0) {
         _ = indent_stack.pop();
         try tokens.append(allocator, .{
             .type = .DEDENT,
@@ -81,17 +69,39 @@ pub fn tokenize(source: []const u8, allocator: std.mem.Allocator) ![]Token {
         });
     }
 
-    state.start = state.current;
-    state.start_column = state.column;
-    try makeToken(&state, &tokens, allocator, .EOF, .none);
+    try tokens.append(allocator, Token{
+        .type = .EOF,
+        .lexeme = "",
+        .line = state.line,
+        .column = state.column,
+    });
 
     const raw_tokens = try tokens.toOwnedSlice(allocator);
-    return convertToBlocks(raw_tokens, allocator);
+    defer allocator.free(raw_tokens);
+
+    const final_tokens = try convertToBlocks(raw_tokens, allocator);
+    return final_tokens;
+}
+
+pub fn freeTokens(tokens: []Token, allocator: std.mem.Allocator) void {
+    for (tokens) |token| {
+        if (token.type == .STRING) {
+            if (token.literal) |lit| {
+                if (lit == .string) {
+                    allocator.free(lit.string);
+                }
+            }
+        }
+    }
+    allocator.free(tokens);
 }
 
 fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
-    var result = try std.ArrayList(Token).initCapacity(allocator, 0);
-    var block_depth: usize = 0;
+    var result = try std.ArrayList(Token).initCapacity(allocator, tokens.len);
+    defer result.deinit(allocator);
+
+    var indent_stack = try std.ArrayList(usize).initCapacity(allocator, 8);
+    defer indent_stack.deinit(allocator);
 
     var i: usize = 0;
     while (i < tokens.len) {
@@ -107,18 +117,37 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                 const has_indent = i + 1 < tokens.len and tokens[i + 1].type == .INDENT;
 
                 if (has_indent) {
-                    // Check what comes AFTER the indent
+                    const indent_token = tokens[i + 1];
+                    const current_indent: usize = @intFromFloat(indent_token.literal.?.number);
                     const after_indent = if (i + 2 < tokens.len) tokens[i + 2].type else TokenType.EOF;
 
-                    // Assignment continuation: := followed by newline+indent
-                    // Allow any expression to start on the next line
+                    // Check if this indent is in a valid context
+                    const valid_indent_context = prev_type == .COLON_EQUAL or
+                        prev_type == .COLON or
+                        prev_type == .EQUAL or
+                        prev_type == .ARROW or
+                        prev_type == .PIPE or
+                        prev_type == .PLUS or
+                        prev_type == .MINUS or
+                        prev_type == .STAR or
+                        prev_type == .SLASH or
+                        prev_type == .DOT or
+                        after_indent == .PIPE or
+                        after_indent == .PLUS or
+                        after_indent == .MINUS or
+                        after_indent == .STAR or
+                        after_indent == .SLASH or
+                        after_indent == .DOT;
+
+                    if (!valid_indent_context and indent_stack.items.len == 0) {
+                        // Orphan indent - not in a block and no valid continuation
+                        return error.UnexpectedIndentation;
+                    }
+
                     if (prev_type == .COLON_EQUAL or prev_type == .COLON or prev_type == .EQUAL) {
-                        // Skip the newline and indent, the value expression follows
                         i += 2;
                         continue;
-                    }
-                    // BLOCK_START: -> followed by indent (for arrow functions/blocks)
-                    else if (prev_type == .ARROW) {
+                    } else if (prev_type == .ARROW) {
                         try result.append(allocator, .{
                             .type = .BLOCK_START,
                             .lexeme = "",
@@ -126,30 +155,18 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                             .column = token.column,
                             .literal = null,
                         });
-                        block_depth += 1;
+                        try indent_stack.append(allocator, current_indent);
                         i += 2;
                         continue;
-                    }
-                    // Valid continuation: operator BEFORE newline OR operator AFTER indent
-                    else if ((prev_type == .PIPE or prev_type == .PLUS or
-                        prev_type == .MINUS or prev_type == .STAR or
-                        prev_type == .SLASH or prev_type == .DOT) or
-                        (after_indent == .PIPE or after_indent == .PLUS or
-                            after_indent == .MINUS or after_indent == .STAR or
-                            after_indent == .SLASH or after_indent == .DOT))
-                    {
-                        i += 2; // Skip NEWLINE and INDENT - continuation is OK
+                    } else if (valid_indent_context) {
+                        i += 2;
                         continue;
-                    }
-                    // ERROR: Indent with no valid continuation
-                    else {
+                    } else {
                         return error.UnexpectedIndentation;
                     }
                 } else {
-                    // NO INDENT - check what's AFTER the newline
                     const next_type = if (i + 1 < tokens.len) tokens[i + 1].type else TokenType.EOF;
 
-                    // Skip newline if next token is a continuation operator
                     if (next_type == .PIPE or next_type == .PLUS or
                         next_type == .MINUS or next_type == .STAR or
                         next_type == .SLASH or next_type == .DOT)
@@ -158,14 +175,12 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                         continue;
                     }
 
-                    // Keep newline for statement separation
                     try result.append(allocator, token);
                     i += 1;
                 }
             },
             .DEDENT => {
-                // Only emit BLOCK_END if we're in a block
-                if (block_depth > 0) {
+                if (indent_stack.items.len > 0) {
                     try result.append(allocator, .{
                         .type = .BLOCK_END,
                         .lexeme = "",
@@ -173,13 +188,13 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
                         .column = token.column,
                         .literal = null,
                     });
-                    block_depth -= 1;
+                    _ = indent_stack.pop();
                 }
                 i += 1;
             },
             .INDENT => {
-                // Standalone INDENT tokens should have been handled above
-                // This shouldn't happen but skip it if it does
+                // Standalone INDENT should have been handled by NEWLINE
+                // If we get here, something's wrong
                 i += 1;
             },
             else => {
@@ -189,8 +204,7 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
         }
     }
 
-    // Close any remaining blocks
-    while (block_depth > 0) {
+    while (indent_stack.items.len > 0) {
         try result.append(allocator, .{
             .type = .BLOCK_END,
             .lexeme = "",
@@ -198,10 +212,10 @@ fn convertToBlocks(tokens: []Token, allocator: std.mem.Allocator) ![]Token {
             .column = if (result.items.len > 0) result.items[result.items.len - 1].column else 1,
             .literal = null,
         });
-        block_depth -= 1;
+        _ = indent_stack.pop();
     }
 
-    return result.toOwnedSlice(allocator);
+    return try result.toOwnedSlice(allocator);
 }
 
 fn handleIndentation(
@@ -210,44 +224,40 @@ fn handleIndentation(
     indent_stack: *std.ArrayList(usize),
     allocator: std.mem.Allocator,
 ) !void {
-    var indent: usize = 0;
+    if (!state.at_line_start) return;
+    state.at_line_start = false;
 
-    while (!state.isAtEnd() and (state.peek() == ' ' or state.peek() == '\t')) {
-        if (state.peek() == ' ') {
-            indent += 1;
-        } else {
-            indent += 4;
-        }
+    var spaces: usize = 0;
+    while (!state.isAtEnd() and state.peek() == ' ') {
+        spaces += 1;
         _ = state.advance();
     }
 
-    if (state.isAtEnd() or state.peek() == '\n' or state.peek() == '/') {
-        while (!state.isAtEnd() and state.peek() != '\n') {
-            _ = state.advance();
-        }
-        return;
-    }
+    if (state.isAtEnd() or state.peek() == '\n') return;
 
-    const current_indent = indent_stack.items[indent_stack.items.len - 1];
+    const current_indent = if (indent_stack.items.len > 0)
+        indent_stack.items[indent_stack.items.len - 1]
+    else
+        0;
 
-    if (indent > current_indent) {
-        try indent_stack.append(allocator, indent);
+    if (spaces > current_indent) {
+        try indent_stack.append(allocator, spaces);
         try tokens.append(allocator, .{
             .type = .INDENT,
             .lexeme = "",
             .line = state.line,
-            .column = state.column,
-            .literal = null,
+            .column = state.start_column,
+            .literal = .{ .number = @as(f64, @floatFromInt(spaces)) },
         });
-    } else if (indent < current_indent) {
-        while (indent_stack.items.len > 1 and indent_stack.items[indent_stack.items.len - 1] > indent) {
+    } else if (spaces < current_indent) {
+        while (indent_stack.items.len > 0 and indent_stack.items[indent_stack.items.len - 1] > spaces) {
             _ = indent_stack.pop();
             try tokens.append(allocator, .{
                 .type = .DEDENT,
                 .lexeme = "",
                 .line = state.line,
-                .column = state.column,
-                .literal = null,
+                .column = state.start_column,
+                .literal = .{ .number = @as(f64, @floatFromInt(spaces)) },
             });
         }
     }
@@ -256,98 +266,111 @@ fn handleIndentation(
 fn scanToken(
     state: *LexState,
     tokens: *std.ArrayList(Token),
+    indent_stack: *std.ArrayList(usize),
     allocator: std.mem.Allocator,
 ) !void {
+    // Handle indentation at the start of each line
+    if (state.at_line_start and !state.isAtEnd() and state.peek() != '\n') {
+        try handleIndentation(state, tokens, indent_stack, allocator);
+    }
+
+    // Set start AFTER handleIndentation so we don't include consumed spaces in lexeme
+    state.start = state.current;
+    state.start_column = state.column;
+
     const c = state.advance();
 
     switch (c) {
-        '(' => return makeToken(state, tokens, allocator, .LEFT_PAREN, .none),
-        ')' => return makeToken(state, tokens, allocator, .RIGHT_PAREN, .none),
-        '{' => return makeToken(state, tokens, allocator, .LEFT_BRACE, .none),
-        '}' => return makeToken(state, tokens, allocator, .RIGHT_BRACE, .none),
-        '[' => return makeToken(state, tokens, allocator, .LEFT_BRACKET, .none),
-        ']' => return makeToken(state, tokens, allocator, .RIGHT_BRACKET, .none),
-        ',' => return makeToken(state, tokens, allocator, .COMMA, .none),
-        '.' => return makeToken(state, tokens, allocator, .DOT, .none),
-        ':' => return if (state.match('='))
-            makeToken(state, tokens, allocator, .COLON_EQUAL, .none)
-        else
-            makeToken(state, tokens, allocator, .COLON, .none),
-        '+' => return makeToken(state, tokens, allocator, .PLUS, .none),
-        '-' => {
-            if (state.match('>')) return makeToken(state, tokens, allocator, .ARROW, .none);
-            return makeToken(state, tokens, allocator, .MINUS, .none);
+        ' ', '\r', '\t' => return,
+        '\n' => {
+            try tokens.append(allocator, .{
+                .type = .NEWLINE,
+                .lexeme = "",
+                .line = state.line,
+                .column = state.start_column,
+            });
+            state.line += 1;
+            state.column = 0;
+            state.at_line_start = true;
         },
-        '*' => return makeToken(state, tokens, allocator, .STAR, .none),
-        '@' => return makeToken(state, tokens, allocator, .AT, .none),
-        '#' => return makeToken(state, tokens, allocator, .HASH, .none),
-        '^' => return makeToken(state, tokens, allocator, .CARET, .none),
-        '?' => return makeToken(state, tokens, allocator, .QUESTION, .none),
-
-        '|' => return if (state.match('>'))
-            makeToken(state, tokens, allocator, .PIPE, .none)
-        else
-            undefinedLexeme(state),
+        '(' => try makeToken(state, tokens, allocator, .LEFT_PAREN, .{ .none = {} }),
+        ')' => try makeToken(state, tokens, allocator, .RIGHT_PAREN, .{ .none = {} }),
+        '{' => try makeToken(state, tokens, allocator, .LEFT_BRACE, .{ .none = {} }),
+        '}' => try makeToken(state, tokens, allocator, .RIGHT_BRACE, .{ .none = {} }),
+        '[' => try makeToken(state, tokens, allocator, .LEFT_BRACKET, .{ .none = {} }),
+        ']' => try makeToken(state, tokens, allocator, .RIGHT_BRACKET, .{ .none = {} }),
+        ',' => try makeToken(state, tokens, allocator, .COMMA, .{ .none = {} }),
+        '.' => try makeToken(state, tokens, allocator, .DOT, .{ .none = {} }),
+        '+' => try makeToken(state, tokens, allocator, .PLUS, .{ .none = {} }),
+        '*' => try makeToken(state, tokens, allocator, .STAR, .{ .none = {} }),
+        '^' => try makeToken(state, tokens, allocator, .CARET, .{ .none = {} }),
+        '!' => try makeToken(state, tokens, allocator, .BANG, .{ .none = {} }),
+        '?' => try makeToken(state, tokens, allocator, .QUESTION, .{ .none = {} }),
+        '-' => {
+            if (state.match('>')) {
+                try makeToken(state, tokens, allocator, .ARROW, .{ .none = {} });
+            } else {
+                try makeToken(state, tokens, allocator, .MINUS, .{ .none = {} });
+            }
+        },
+        '/' => {
+            if (state.match('/')) {
+                commentLexeme(state);
+            } else {
+                try makeToken(state, tokens, allocator, .SLASH, .{ .none = {} });
+            }
+        },
+        '=' => {
+            if (state.match('=')) {
+                try makeToken(state, tokens, allocator, .EQUAL_EQUAL, .{ .none = {} });
+            } else {
+                try makeToken(state, tokens, allocator, .EQUAL, .{ .none = {} });
+            }
+        },
+        '<' => {
+            if (state.match('=')) {
+                try makeToken(state, tokens, allocator, .LESS_EQUAL, .{ .none = {} });
+            } else {
+                try makeToken(state, tokens, allocator, .LESS, .{ .none = {} });
+            }
+        },
+        '>' => {
+            if (state.match('=')) {
+                try makeToken(state, tokens, allocator, .GREATER_EQUAL, .{ .none = {} });
+            } else {
+                try makeToken(state, tokens, allocator, .GREATER, .{ .none = {} });
+            }
+        },
+        ':' => {
+            if (state.match('=')) {
+                try makeToken(state, tokens, allocator, .COLON_EQUAL, .{ .none = {} });
+            } else {
+                try makeToken(state, tokens, allocator, .COLON, .{ .none = {} });
+            }
+        },
+        '|' => {
+            if (state.match('>')) {
+                try makeToken(state, tokens, allocator, .PIPE, .{ .none = {} });
+            } else {
+                try undefinedLexeme(state);
+            }
+        },
         '"' => {
             const str = try stringLiteral(state, allocator);
-            return makeToken(state, tokens, allocator, .STRING, .{ .string = str });
+            try makeToken(state, tokens, allocator, .STRING, .{ .string = str });
         },
-        '_' => return makeToken(state, tokens, allocator, .UNDERSCORE, .none),
-        '/' => return if (state.match('/'))
-            commentLexeme(state)
-        else
-            makeToken(state, tokens, allocator, .SLASH, .none),
-        '!' => return if (state.match('='))
-            makeToken(state, tokens, allocator, .BANG_EQUAL, .none)
-        else
-            makeToken(state, tokens, allocator, .BANG, .none),
-        '=' => return if (state.match('='))
-            makeToken(state, tokens, allocator, .EQUAL_EQUAL, .none)
-        else
-            makeToken(state, tokens, allocator, .EQUAL, .none),
-        '<' => return if (state.match('='))
-            makeToken(state, tokens, allocator, .LESS_EQUAL, .none)
-        else
-            makeToken(state, tokens, allocator, .LESS, .none),
-        '>' => return if (state.match('='))
-            makeToken(state, tokens, allocator, .GREATER_EQUAL, .none)
-        else
-            makeToken(state, tokens, allocator, .GREATER, .none),
-        ' ', '\r', '\t' => return,
-        '\n' => return newLine(state, tokens, allocator),
-        else => if (isNumber(c)) {
-            const literal = try scanNumber(state);
-            return makeToken(state, tokens, allocator, .NUMBER, literal);
-        } else if (isAlpha(c)) {
-            // Scan the identifier/keyword
-            while (isAlpha(state.peek()) or isNumber(state.peek())) {
-                _ = state.advance();
+        else => {
+            if (isNumber(c)) {
+                const literal = try scanNumber(state);
+                try makeToken(state, tokens, allocator, .NUMBER, literal);
+            } else if (isAlpha(c)) {
+                const token_type = identifier(state);
+                try makeToken(state, tokens, allocator, token_type, .{ .none = {} });
+            } else {
+                try undefinedLexeme(state);
             }
-
-            const word = state.source[state.start..state.current];
-            const token_type = KeywordMap.get(word) orelse .IDENTIFIER;
-
-            // Create literal value for booleans
-            const literal: Literal = if (token_type == .BOOLEAN) blk: {
-                if (std.mem.eql(u8, word, "true")) {
-                    break :blk .{ .boolean = true };
-                } else {
-                    break :blk .{ .boolean = false };
-                }
-            } else .none;
-
-            return makeToken(state, tokens, allocator, token_type, literal);
-        } else {
-            return undefinedLexeme(state);
         },
     }
-}
-
-fn newLine(state: *LexState, tokens: *std.ArrayList(Token), allocator: std.mem.Allocator) !void {
-    state.column = 0;
-    state.line += 1;
-    state.at_line_start = true;
-    try makeToken(state, tokens, allocator, .NEWLINE, .none);
 }
 
 fn undefinedLexeme(state: *LexState) !void {
@@ -468,11 +491,10 @@ const testing = std.testing;
 
 test "tokenize simple number" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source = "42";
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
 
     try testing.expectEqual(@as(usize, 2), tokens.len);
     try testing.expectEqual(TokenType.NUMBER, tokens[0].type);
@@ -482,11 +504,10 @@ test "tokenize simple number" {
 
 test "tokenize assignment" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source = "x := 10";
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
 
     try testing.expectEqual(@as(usize, 4), tokens.len);
     try testing.expectEqual(TokenType.IDENTIFIER, tokens[0].type);
@@ -499,11 +520,10 @@ test "tokenize assignment" {
 
 test "tokenize multiplication" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source = "3 * 4";
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
 
     try testing.expectEqual(@as(usize, 4), tokens.len);
     try testing.expectEqual(TokenType.NUMBER, tokens[0].type);
@@ -516,11 +536,10 @@ test "tokenize multiplication" {
 
 test "tokenize string literal" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source = "\"hello world\"";
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
 
     try testing.expectEqual(@as(usize, 2), tokens.len);
     try testing.expectEqual(TokenType.STRING, tokens[0].type);
@@ -530,73 +549,69 @@ test "tokenize string literal" {
 
 test "tokenize multiline with indentation - continuation" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source =
         \\x := 5 +
-        \\  5    // VALID: operator continuation
+        \\  5
     ;
-    const tokens = try tokenize(source, arena.allocator());
-    // This should tokenize successfully
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
+
     try testing.expect(tokens.len > 0);
 }
 
 test "tokenize multiline with indentation - assignment value" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source =
         \\x :=
-        \\  5 + 10    // VALID: assignment value on next line
+        \\  5 + 10
     ;
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
+
     try testing.expect(tokens.len > 0);
 }
 
 test "tokenize indent/dedent matching - if block" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source =
         \\if true ->
         \\  x := 5
-        \\  y := 10   // VALID: inside a block
+        \\  y := 10
         \\z := 15
     ;
 
-    const tokens = try tokenize(source, arena.allocator());
-    // Should have BLOCK_START after ->, statements inside, BLOCK_END before z
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
+
     try testing.expect(tokens.len > 0);
 }
 
 test "tokenize multiple statements" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source =
         \\x := 5
-        \\y := 10    // VALID: same indentation level
+        \\y := 10
         \\z := 15
     ;
 
-    const tokens = try tokenize(source, arena.allocator());
+    const tokens = try tokenize(source, allocator);
+    defer freeTokens(tokens, allocator);
+
     try testing.expect(tokens.len > 0);
 }
 
 test "tokenize invalid orphan indentation" {
     const allocator = testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    defer arena.deinit();
 
     const source =
         \\x := 5
-        \\  y := 10   // INVALID: orphan indented statement
+        \\  y := 10
     ;
 
-    const result = tokenize(source, arena.allocator());
+    const result = tokenize(source, allocator);
     try testing.expectError(error.UnexpectedIndentation, result);
 }

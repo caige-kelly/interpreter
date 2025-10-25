@@ -25,22 +25,23 @@ pub const Expr = union(enum) {
     policy: Policy,
     pipe: PipeExpr,
 
-    pub fn deinit(self: *Expr, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .binary => |bin| {
-                bin.left.deinit(allocator);
-                bin.right.deinit(allocator);
-                allocator.destroy(bin.left);
-                allocator.destroy(bin.right);
+    /// Recursively free all heap allocations in this expression tree
+    pub fn deinit(self: Expr, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .assignment => |a| {
+                allocator.destroy(a.value);
             },
-            .unary => |un| { // Add this case
-                un.operand.deinit(allocator);
-                allocator.destroy(un.operand);
+            .binary => |b| {
+                allocator.destroy(b.left);
+                allocator.destroy(b.right);
             },
-            .assignment => |assign| {
-                assign.value.deinit(allocator);
-                allocator.destroy(assign.value);
+            .ok_expr => |ok| {
+                allocator.destroy(ok.value);
             },
+            .err_expr => |err| {
+                allocator.destroy(err.message);
+            },
+            // Add other variants that contain pointers
             else => {},
         }
     }
