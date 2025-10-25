@@ -2,13 +2,13 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
-const ast = @import("ast.zig");
-const eval = @import("evaluator.zig");
-const lexer = @import("lexer.zig");
-const parser = @import("parser.zig");
-const sys = @import("system.zig");
-const Process = @import("process.zig").Process;
-const RunAttempt = @import("process.zig").RunAttempt;
+const ast = @import("ast");
+const eval = @import("evaluator");
+const lexer = @import("lexer");
+const parser = @import("parser");
+const sys = @import("system");
+const Process = @import("process").Process;
+const RunAttempt = @import("process").RunAttempt;
 
 // ============================================================================
 // Temporary stub (until full trace and supervision logging are re-enabled)

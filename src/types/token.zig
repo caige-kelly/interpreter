@@ -1,6 +1,6 @@
 const std = @import("std");
-const Expr = @import("ast.zig").Expr;
-const Literal = @import("ast.zig").Literal;
+const Expr = @import("ast").Expr;
+const Literal = @import("ast").Literal;
 
 const KeywordKV = struct { []const u8, TokenType };
 

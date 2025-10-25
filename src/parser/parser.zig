@@ -1,10 +1,10 @@
 const std = @import("std");
 const testing = std.testing;
-const Token = @import("token.zig").Token;
-const TokenType = @import("token.zig").TokenType;
-const Ast = @import("ast.zig");
-const Type = @import("ast.zig").Type;
-const Lexer = @import("lexer.zig");
+const Token = @import("token").Token;
+const TokenType = @import("token").TokenType;
+const Ast = @import("ast");
+const Type = @import("ast").Type;
+const Lexer = @import("lexer");
 
 pub const ParseError = error{
     UnexpectedToken,
@@ -375,7 +375,7 @@ fn skipNewlines(state: *ParseState) void {
 }
 
 // Tests
-const lex = @import("lexer.zig");
+const lex = @import("lexer");
 
 test "parse multiplication - manual tokens" {
     const allocator = testing.allocator;

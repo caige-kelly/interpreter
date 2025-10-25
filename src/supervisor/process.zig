@@ -2,13 +2,13 @@ const std = @import("std");
 const testing = std.testing;
 const Allocator = std.mem.Allocator;
 
-const Value = @import("evaluator.zig").Value;
-const Result = @import("evaluator.zig").Result;
-const ast = @import("ast.zig");
-const eval = @import("evaluator.zig");
-const lexer = @import("lexer.zig");
-const parser = @import("parser.zig");
-const sys = @import("system.zig");
+const Value = @import("evaluator").Value;
+const Result = @import("evaluator").Result;
+const ast = @import("ast");
+const eval = @import("evaluator");
+const lexer = @import("lexer");
+const parser = @import("parser");
+const sys = @import("system");
 
 pub const TraceEntry = eval.TraceEntry;
 

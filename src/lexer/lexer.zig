@@ -1,9 +1,9 @@
 const std = @import("std");
-const errors = @import("error.zig");
-const Token = @import("token.zig").Token;
-const TokenType = @import("token.zig").TokenType;
-const Literal = @import("ast.zig").Literal;
-const KeywordMap = @import("token.zig").KeywordMap;
+const errors = @import("error");
+const Token = @import("token").Token;
+const TokenType = @import("token").TokenType;
+const Literal = @import("ast").Literal;
+const KeywordMap = @import("token").KeywordMap;
 
 const LexState = struct {
     source: []const u8,

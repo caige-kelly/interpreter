@@ -1,5 +1,5 @@
 const std = @import("std");
-const TokenType = @import("token.zig").TokenType;
+const TokenType = @import("token").TokenType;
 
 pub const Program = struct {
     expressions: []Expr,

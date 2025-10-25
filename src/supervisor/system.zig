@@ -1,6 +1,6 @@
 const std = @import("std");
-const prelude = @import("prelude.zig");
-const Process = @import("process.zig").Process;
+const prelude = @import("prelude");
+const Process = @import("process").Process;
 
 pub const SystemConfig = struct {
     max_restarts: u32 = 3,
